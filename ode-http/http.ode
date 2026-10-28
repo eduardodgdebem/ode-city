@@ -1,0 +1,597 @@
+// ---------------------------------------------------------------------------
+// ode-http: a small web server framework for Ode.
+//
+//   import { App, Request, Response } from "../ode-http/http";
+//
+//   fn hello(request: *Request, response: *Response): void {
+//     response.text(200, "hello");
+//   }
+//
+//   fn main(): i32 {
+//     let app: *App = App.new();
+//     app.get("/", hello);
+//     app.get("/users/:id", showUser);      // request.param("id")
+//     app.serveStatic("/", "public");
+//     app.listen(8080) catch (e) {
+//       return 1;
+//     };
+//     return 0;
+//   }
+//
+// A request goes through the middleware, in the order added, then to the
+// first route whose method and pattern match it (route.ode), then to the
+// static directories, and to `notFound` when none answers. A HEAD request is
+// answered by the GET route for its path, without the body.
+//
+// Each connection is answered by a process of its own, forked from the
+// server, and closed after one request: what one handler does cannot hold up
+// another, and a crash takes down only its own request. It also means a
+// handler's changes to globals die with its process: state that must last
+// belongs in a file or a database. Handlers are plain functions -- Ode's
+// lambdas capture nothing -- and reach what they share through `App.data`.
+// ---------------------------------------------------------------------------
+
+import { List } from "std/list";
+import { alloc } from "std/mem";
+import { Builder, startsWith, length } from "std/text";
+import { println, eprintln, flush } from "std/io";
+import { fopen, fclose, fread } from "std/c";
+import { matchRoute } from "./route";
+import { readRequest, sameIgnoringCase, queryValue } from "./parse";
+import { serveFile, sizeOf } from "./static";
+import { listenOn, acceptOn, ignoreSignals, setReadTimeout, writeAll, closeFd, forkChild, exitChild } from "./net";
+
+export enum Method {
+  Get,
+  Head,
+  Post,
+  Put,
+  Patch,
+  Delete,
+  Options,
+  // Any other, by its name in `methodName`.
+  Other,
+}
+
+export struct Header {
+  name: *i8,
+  value: *i8,
+}
+
+// Why a request could not be read.
+export error enum HttpError {
+  Malformed,
+  TooLarge,
+  Closed,
+}
+
+export error enum ServeError {
+  // The port is taken, or not ours to have.
+  CannotListen,
+}
+
+// Answers a request by filling in `response`.
+export type Handler = (*Request, *Response) => void;
+
+// Runs before the routes: false when it has answered the request itself, and
+// nothing after it should.
+export type Middleware = (*Request, *Response) => bool;
+
+// What a connection that sends nothing is given before it is closed.
+let READ_TIMEOUT_SECONDS: i64 = 10;
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+export struct Request {
+  method: Method,
+  methodName: *i8,
+  // As sent, path and query: "/search?q=ode".
+  target: *i8,
+  // The path, decoded, without the query: "/search".
+  path: *i8,
+  // What follows the "?", as sent; "" for none.
+  query: *i8,
+  version: *i8,
+  headers: *List<Header>,
+  // `bodyLength` bytes, with a NUL after them so text can be read as it is.
+  body: *i8,
+  bodyLength: i64,
+  // The parts the route's pattern named.
+  params: *List<Header>,
+  app: *App,
+
+  fn empty(): *Request {
+    let request: *Request = alloc<Request>(1);
+    request.method = Method.Get;
+    request.methodName = "GET";
+    request.target = "/";
+    request.path = "/";
+    request.query = "";
+    request.version = "HTTP/1.1";
+    request.headers = List<Header>.new();
+    request.body = "";
+    request.bodyLength = 0;
+    request.params = List<Header>.new();
+    request.app = null;
+    return request;
+  }
+
+  // The header's value, by its name in any case; null when it was not sent.
+  fn header(self: *Request, name: *i8): *i8 {
+    for (i in 0..self.headers.count) {
+      let header: Header = self.headers.at(i);
+      if (sameIgnoringCase(header.name, name)) {
+        return header.value;
+      }
+    }
+    return null;
+  }
+
+  // A part the route's pattern named: "id" for "/users/:id", "*" for a star.
+  fn param(self: *Request, name: *i8): *i8 {
+    for (i in 0..self.params.count) {
+      let param: Header = self.params.at(i);
+      if (sameIgnoringCase(param.name, name)) {
+        return param.value;
+      }
+    }
+    return null;
+  }
+
+  // A value from the query string, decoded; null when it is not there.
+  fn queryParam(self: *Request, name: *i8): *i8 {
+    return queryValue(self.query, name);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Responses
+// ---------------------------------------------------------------------------
+
+export struct Response {
+  status: i32,
+  headers: *List<Header>,
+  body: *Builder,
+  // A file to send as the body, streamed, in place of `body`.
+  file: *i8,
+
+  fn new(): *Response {
+    let response: *Response = alloc<Response>(1);
+    response.status = 200;
+    response.headers = List<Header>.new();
+    response.body = Builder.new();
+    response.file = null;
+    return response;
+  }
+
+  // Sets a header, replacing one of the same name.
+  fn setHeader(self: *Response, name: *i8, value: *i8): void {
+    for (i in 0..self.headers.count) {
+      if (sameIgnoringCase(self.headers.at(i).name, name)) {
+        self.headers.set(i, Header { name: name, value: value });
+        return;
+      }
+    }
+    self.headers.push(Header { name: name, value: value });
+  }
+
+  fn header(self: *Response, name: *i8): *i8 {
+    for (i in 0..self.headers.count) {
+      let header: Header = self.headers.at(i);
+      if (sameIgnoringCase(header.name, name)) {
+        return header.value;
+      }
+    }
+    return null;
+  }
+
+  // Answers with `body`, as `contentType`.
+  fn send(self: *Response, status: i32, contentType: *i8, body: *i8): void {
+    self.status = status;
+    self.setHeader("Content-Type", contentType);
+    self.body = Builder.new();
+    self.body.add(body);
+    self.file = null;
+  }
+
+  fn text(self: *Response, status: i32, body: *i8): void {
+    self.send(status, "text/plain; charset=utf-8", body);
+  }
+
+  fn html(self: *Response, status: i32, body: *i8): void {
+    self.send(status, "text/html; charset=utf-8", body);
+  }
+
+  // `body` is sent as it is: it must already be JSON.
+  fn json(self: *Response, status: i32, body: *i8): void {
+    self.send(status, "application/json", body);
+  }
+
+  fn redirect(self: *Response, location: *i8): void {
+    self.status = 302;
+    self.setHeader("Location", location);
+    self.body = Builder.new();
+    self.file = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The app
+// ---------------------------------------------------------------------------
+
+struct Route {
+  method: Method,
+  pattern: *i8,
+  handler: Handler,
+}
+
+struct Mount {
+  prefix: *i8,
+  dir: *i8,
+}
+
+export struct App {
+  routes: *List<Route>,
+  middleware: *List<Middleware>,
+  mounts: *List<Mount>,
+  // What answers when nothing else does.
+  notFound: Handler,
+  // Whether each request is printed, with its status.
+  log: bool,
+  // Whatever the handlers share, as they cannot capture it.
+  data: *i8,
+
+  fn new(): *App {
+    let app: *App = alloc<App>(1);
+    app.routes = List<Route>.new();
+    app.middleware = List<Middleware>.new();
+    app.mounts = List<Mount>.new();
+    app.notFound = notFound;
+    app.log = true;
+    app.data = null;
+    return app;
+  }
+
+  fn route(self: *App, method: Method, pattern: *i8, handler: Handler): void {
+    self.routes.push(Route { method: method, pattern: pattern, handler: handler });
+  }
+
+  fn get(self: *App, pattern: *i8, handler: Handler): void {
+    self.route(Method.Get, pattern, handler);
+  }
+
+  fn post(self: *App, pattern: *i8, handler: Handler): void {
+    self.route(Method.Post, pattern, handler);
+  }
+
+  fn put(self: *App, pattern: *i8, handler: Handler): void {
+    self.route(Method.Put, pattern, handler);
+  }
+
+  fn patch(self: *App, pattern: *i8, handler: Handler): void {
+    self.route(Method.Patch, pattern, handler);
+  }
+
+  fn delete(self: *App, pattern: *i8, handler: Handler): void {
+    self.route(Method.Delete, pattern, handler);
+  }
+
+  fn use(self: *App, middleware: Middleware): void {
+    self.middleware.push(middleware);
+  }
+
+  // Answers GET and HEAD for paths under `prefix` with the files under
+  // `dir`: "/static/app.js" from serveStatic("/static", "public") is
+  // public/app.js.
+  fn serveStatic(self: *App, prefix: *i8, dir: *i8): void {
+    self.mounts.push(Mount { prefix: prefix, dir: dir });
+  }
+
+  // Fills in `response` for `request`: the middleware, the routes, the
+  // static directories, and `notFound`. Nothing is sent: `listen` does that,
+  // and tests call this directly.
+  fn handle(self: *App, request: *Request, response: *Response): void {
+    request.app = self;
+    for (i in 0..self.middleware.count) {
+      let before: Middleware = self.middleware.at(i);
+      if (!before(request, response)) {
+        return;
+      }
+    }
+
+    let wanted: Method = request.method;
+    if (wanted == Method.Head) {
+      wanted = Method.Get;
+    }
+    let otherMethod: bool = false;
+    for (i in 0..self.routes.count) {
+      let route: Route = self.routes.at(i);
+      let params: *List<Header> = List<Header>.new();
+      if (matchRoute(route.pattern, request.path, params)) {
+        if (route.method == wanted) {
+          request.params = params;
+          route.handler(request, response);
+          return;
+        }
+        otherMethod = true;
+      }
+    }
+
+    if (wanted == Method.Get) {
+      for (i in 0..self.mounts.count) {
+        let mount: Mount = self.mounts.at(i);
+        let rest: *i8 = under(request.path, mount.prefix);
+        if (rest != null && serveFile(response, mount.dir, rest)) {
+          return;
+        }
+      }
+    }
+
+    if (otherMethod) {
+      response.text(405, "method not allowed");
+      return;
+    }
+    self.notFound(request, response);
+  }
+
+  // Serves on `port` until the process is ended; CannotListen when the port
+  // cannot be had.
+  fn listen(self: *App, port: i32): void | ServeError {
+    ignoreSignals();
+    let server: i32 = listenOn(port);
+    if (server < 0) {
+      return ServeError.CannotListen;
+    }
+    while (true) {
+      let client: i32 = acceptOn(server);
+      if (client < 0) {
+        continue;
+      }
+      if (forkChild()) {
+        closeFd(server);
+        self.serveConnection(client);
+        flush();
+        exitChild();
+      }
+      closeFd(client);
+    }
+  }
+
+  // One connection: a request read, handled, answered, and the connection
+  // closed.
+  fn serveConnection(self: *App, client: i32): void {
+    setReadTimeout(client, READ_TIMEOUT_SECONDS);
+    let response: *Response = Response.new();
+    let read: *Request | HttpError = readRequest(client);
+    if (read is HttpError) {
+      if (read != HttpError.Closed) {
+        response.text(match (read) { .TooLarge => 413, else => 400 }, "bad request");
+        writeResponse(client, Request.empty(), response);
+      }
+      closeFd(client);
+      return;
+    }
+    self.handle(read, response);
+    writeResponse(client, read, response);
+    closeFd(client);
+    if (self.log) {
+      let line: *Builder = Builder.new();
+      line.addInt(response.status as i64);
+      line.add(" ");
+      line.add(read.methodName);
+      line.add(" ");
+      line.add(read.target);
+      println(line.take());
+    }
+  }
+}
+
+fn notFound(request: *Request, response: *Response): void {
+  response.text(404, "not found");
+}
+
+// What is left of `path` under `prefix`, starting with "/"; null when it is
+// not under it. "/" holds every path.
+fn under(path: *i8, prefix: *i8): *i8 {
+  let size: i64 = length(prefix);
+  while (size > 0 && prefix[size - 1] == '/') {
+    size -= 1;
+  }
+  for (i in 0..size) {
+    if (path[i] != prefix[i]) {
+      return null;
+    }
+  }
+  if (path[size] != 0 && path[size] != '/') {
+    return null;
+  }
+  if (path[size] == 0) {
+    return "/";
+  }
+  return path + size;
+}
+
+// ---------------------------------------------------------------------------
+// Sending
+// ---------------------------------------------------------------------------
+
+// The status line, the headers, and the body or the file, unless the request
+// was HEAD. Every response closes its connection.
+fn writeResponse(client: i32, request: *Request, response: *Response): void {
+  let stream: *i8 = null;
+  let size: i64 = response.body.length;
+  if (response.file != null) {
+    stream = fopen(response.file, "rb");
+    if (stream == null) {
+      response.text(404, "not found");
+      size = response.body.length;
+    } else {
+      size = sizeOf(stream);
+    }
+  }
+
+  let head: *Builder = Builder.new();
+  head.add("HTTP/1.1 ");
+  head.addInt(response.status as i64);
+  head.add(" ");
+  head.add(reasonOf(response.status));
+  head.add("\r\n");
+  for (i in 0..response.headers.count) {
+    let header: Header = response.headers.at(i);
+    head.add(header.name);
+    head.add(": ");
+    head.add(header.value);
+    head.add("\r\n");
+  }
+  head.add("Content-Length: ");
+  head.addInt(size);
+  head.add("\r\nConnection: close\r\n\r\n");
+  let sentHead: bool = writeAll(client, head.data, head.length);
+
+  if (sentHead && request.method != Method.Head) {
+    if (stream == null) {
+      writeAll(client, response.body.data, response.body.length);
+    } else {
+      let chunk: *i8 = alloc<i8>(65536);
+      let got: isize = fread(chunk, 1, 65536, stream);
+      while (got > 0 && writeAll(client, chunk, got as i64)) {
+        got = fread(chunk, 1, 65536, stream);
+      }
+    }
+  }
+  if (stream != null) {
+    fclose(stream);
+  }
+}
+
+export fn reasonOf(status: i32): *i8 {
+  return match (status) {
+    200 => "OK",
+    201 => "Created",
+    204 => "No Content",
+    301 => "Moved Permanently",
+    302 => "Found",
+    304 => "Not Modified",
+    400 => "Bad Request",
+    401 => "Unauthorized",
+    403 => "Forbidden",
+    404 => "Not Found",
+    405 => "Method Not Allowed",
+    413 => "Content Too Large",
+    500 => "Internal Server Error",
+    503 => "Service Unavailable",
+    else => "Status",
+  };
+}
+
+// ---------------------------------------------------------------------------
+
+fn hello(request: *Request, response: *Response): void {
+  response.text(200, "hello");
+}
+
+fn greet(request: *Request, response: *Response): void {
+  let out: *Builder = Builder.new();
+  out.add("hello, ");
+  out.add(request.param("name"));
+  response.text(200, out.take());
+}
+
+fn created(request: *Request, response: *Response): void {
+  response.json(201, request.body);
+}
+
+fn requestFor(method: Method, path: *i8): *Request {
+  let request: *Request = Request.empty();
+  request.method = method;
+  request.path = path;
+  request.target = path;
+  return request;
+}
+
+fn bodyOf(response: *Response): *i8 {
+  return response.body.data;
+}
+
+test "routes answer their method and path" {
+  let app: *App = App.new();
+  app.get("/", hello);
+  app.get("/hello/:name", greet);
+  let response: *Response = Response.new();
+  app.handle(requestFor(Method.Get, "/hello/ode"), response);
+  assertEq(response.status, 200);
+  assertEq(bodyOf(response), "hello, ode");
+  assertEq(response.header("content-type"), "text/plain; charset=utf-8");
+}
+
+test "nothing matching is 404, the wrong method 405" {
+  let app: *App = App.new();
+  app.get("/", hello);
+  let missing: *Response = Response.new();
+  app.handle(requestFor(Method.Get, "/nowhere"), missing);
+  assertEq(missing.status, 404);
+  let wrong: *Response = Response.new();
+  app.handle(requestFor(Method.Post, "/"), wrong);
+  assertEq(wrong.status, 405);
+}
+
+test "HEAD is answered by the GET route" {
+  let app: *App = App.new();
+  app.get("/", hello);
+  let response: *Response = Response.new();
+  app.handle(requestFor(Method.Head, "/"), response);
+  assertEq(response.status, 200);
+}
+
+test "a POST route gets the body" {
+  let app: *App = App.new();
+  app.post("/things", created);
+  let request: *Request = requestFor(Method.Post, "/things");
+  request.body = "{\"a\":1}";
+  request.bodyLength = 7;
+  let response: *Response = Response.new();
+  app.handle(request, response);
+  assertEq(response.status, 201);
+  assertEq(bodyOf(response), "{\"a\":1}");
+  assertEq(response.header("Content-Type"), "application/json");
+}
+
+fn refuse(request: *Request, response: *Response): bool {
+  if (request.header("Authorization") == null) {
+    response.text(401, "who are you?");
+    return false;
+  }
+  return true;
+}
+
+test "middleware runs first and can answer" {
+  let app: *App = App.new();
+  app.use(refuse);
+  app.get("/", hello);
+  let refused: *Response = Response.new();
+  app.handle(requestFor(Method.Get, "/"), refused);
+  assertEq(refused.status, 401);
+
+  let request: *Request = requestFor(Method.Get, "/");
+  request.headers.push(Header { name: "authorization", value: "yes" });
+  let allowed: *Response = Response.new();
+  app.handle(request, allowed);
+  assertEq(allowed.status, 200);
+}
+
+test "paths under a prefix" {
+  assertEq(under("/static/app.js", "/static"), "/app.js");
+  assertEq(under("/static", "/static/"), "/");
+  assert(under("/staticky", "/static") == null, "a prefix is a whole part");
+  assertEq(under("/index.html", "/"), "/index.html");
+}
+
+test "headers replace their own name" {
+  let response: *Response = Response.new();
+  response.setHeader("Cache-Control", "no-cache");
+  response.setHeader("cache-control", "no-store");
+  assertEq(response.headers.count, 1);
+  assertEq(response.header("Cache-Control"), "no-store");
+}

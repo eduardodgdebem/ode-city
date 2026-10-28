@@ -1,0 +1,92 @@
+// ---------------------------------------------------------------------------
+// A tour of ode-http: `ode build hello`, then http://localhost:8090.
+//
+//   GET  /                  a page
+//   GET  /hello/:name       a greeting, from the path
+//   GET  /search?q=...      a value from the query
+//   POST /echo              the body, sent back
+//   GET  /api/status        JSON
+//   GET  /old               a redirect to /
+//   GET  /files/*           the files in ode-http/examples/public
+// ---------------------------------------------------------------------------
+
+import { Builder, fromInt } from "std/text";
+import { println, eprintln, flush } from "std/io";
+import { App, Request, Response } from "../http";
+
+fn main(): i32 {
+  let app: *App = App.new();
+  app.use(poweredBy);
+  app.get("/", home);
+  app.get("/hello/:name", hello);
+  app.get("/search", search);
+  app.post("/echo", echo);
+  app.get("/api/status", status);
+  app.get("/old", moved);
+  app.serveStatic("/files", "ode-http/examples/public");
+
+  println("ode-http example on http://localhost:8090");
+  flush();
+  app.listen(8090) catch (e) {
+    eprintln("hello: port 8090 is taken");
+    return 1;
+  };
+  return 0;
+}
+
+// Middleware: a header on every response.
+fn poweredBy(request: *Request, response: *Response): bool {
+  response.setHeader("X-Powered-By", "ode-http");
+  return true;
+}
+
+fn home(request: *Request, response: *Response): void {
+  response.html(200, `
+    <!doctype html>
+    <title>ode-http</title>
+    <h1>Hello from ode-http</h1>
+    <ul>
+      <li><a href="/hello/world">/hello/world</a></li>
+      <li><a href="/search?q=ode+city">/search?q=ode+city</a></li>
+      <li><a href="/api/status">/api/status</a></li>
+      <li><a href="/files/">/files/</a></li>
+    </ul>
+  `);
+}
+
+fn hello(request: *Request, response: *Response): void {
+  let out: *Builder = Builder.new();
+  out.add("hello, ");
+  out.add(request.param("name"));
+  out.add("!");
+  response.text(200, out.take());
+}
+
+fn search(request: *Request, response: *Response): void {
+  let q: *i8 = request.queryParam("q");
+  if (q == null) {
+    response.text(400, "give me ?q=something");
+    return;
+  }
+  let out: *Builder = Builder.new();
+  out.add("you searched for: ");
+  out.add(q);
+  response.text(200, out.take());
+}
+
+fn echo(request: *Request, response: *Response): void {
+  let kind: *i8 = request.header("Content-Type") ?? "text/plain";
+  response.send(200, kind, request.body);
+}
+
+fn status(request: *Request, response: *Response): void {
+  let out: *Builder = Builder.new();
+  out.add("{\"ok\":true,\"server\":\"ode-http\",\"agent\":\"");
+  out.add(request.header("User-Agent") ?? "");
+  out.add("\"}");
+  response.json(200, out.take());
+}
+
+fn moved(request: *Request, response: *Response): void {
+  response.redirect("/");
+}

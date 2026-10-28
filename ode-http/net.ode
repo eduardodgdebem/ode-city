@@ -1,0 +1,105 @@
+// ---------------------------------------------------------------------------
+// Sockets and processes: what the server needs from the operating system,
+// for macOS and Linux, through the C library.
+// ---------------------------------------------------------------------------
+
+import { OS, Os } from "std/target";
+import { allocZeroed } from "std/mem";
+import { write } from "std/c";
+
+extern fn socket(domain: i32, kind: i32, protocol: i32): i32;
+extern fn setsockopt(fd: i32, level: i32, name: i32, value: *i8, length: u32): i32;
+extern fn bind(fd: i32, address: *i8, length: u32): i32;
+extern fn listen(fd: i32, backlog: i32): i32;
+extern fn accept(fd: i32, address: *i8, length: *u32): i32;
+extern fn close(fd: i32): i32;
+extern fn signal(number: i32, handler: *i8): *i8;
+extern fn fork(): i32;
+extern fn _exit(code: i32): void;
+
+let AF_INET: i32 = 2;
+let SOCK_STREAM: i32 = 1;
+let SIGPIPE: i32 = 13;
+
+// A socket listening on every address at `port`, so others on the network
+// can reach it too; -1 when it cannot be had, the port being taken, say.
+export fn listenOn(port: i32): i32 {
+  let server: i32 = socket(AF_INET, SOCK_STREAM, 0);
+  if (server < 0) {
+    return -1;
+  }
+  let yes: i32 = 1;
+  setsockopt(server, solSocket(), match (OS) { .Linux => 2, else => 4 }, (&yes) as *i8, 4);
+
+  // sockaddr_in on 0.0.0.0: BSDs lead with its length, Linux does not.
+  let address: *i8 = allocZeroed<i8>(16);
+  match (OS) {
+    .Linux => {
+      address[0] = AF_INET as i8;
+    }
+    else => {
+      address[0] = 16;
+      address[1] = AF_INET as i8;
+    }
+  }
+  address[2] = ((port >> 8) & 255) as i8;
+  address[3] = (port & 255) as i8;
+  if (bind(server, address, 16) != 0 || listen(server, 64) != 0) {
+    close(server);
+    return -1;
+  }
+  return server;
+}
+
+// The next connection, or -1.
+export fn acceptOn(server: i32): i32 {
+  return accept(server, null, null);
+}
+
+// A peer that hangs up mid-answer must not take the server with it, and the
+// processes that answered are reaped by the system as they finish.
+export fn ignoreSignals(): void {
+  let ignore: *i8 = 1 as isize as *i8;
+  signal(SIGPIPE, ignore);
+  signal(match (OS) { .Linux => 17, else => 20 }, ignore);
+}
+
+// A read that waits longer than `seconds` gives up, so a connection that
+// sends nothing does not hold its process forever.
+export fn setReadTimeout(fd: i32, seconds: i64): void {
+  // struct timeval: seconds, then microseconds.
+  let timeout: *i64 = allocZeroed<i64>(2);
+  timeout[0] = seconds;
+  setsockopt(fd, solSocket(), match (OS) { .Linux => 20, else => 0x1006 }, timeout as *i8, 16);
+}
+
+// All `count` bytes, however many writes it takes; false when the peer is
+// gone.
+export fn writeAll(fd: i32, bytes: *i8, count: i64): bool {
+  let sent: i64 = 0;
+  while (sent < count) {
+    let wrote: isize = write(fd, bytes + sent, (count - sent) as isize);
+    if (wrote <= 0) {
+      return false;
+    }
+    sent += wrote as i64;
+  }
+  return true;
+}
+
+export fn closeFd(fd: i32): void {
+  close(fd);
+}
+
+// True in the child.
+export fn forkChild(): bool {
+  return fork() == 0;
+}
+
+export fn exitChild(): void {
+  _exit(0);
+}
+
+fn solSocket(): i32 {
+  return match (OS) { .Linux => 1, else => 0xffff };
+}

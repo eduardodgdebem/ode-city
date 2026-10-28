@@ -5,9 +5,11 @@
 //   ode build test         run the tests of everything but the renderer
 //   ode build serve        build, then serve web/ on http://localhost:8080
 //   ode build serve -- 9000   on another port
+//   ode build hello        ode-http's example app, on http://localhost:8090
 //
 // The app is web/: a PWA that loads city.wasm and runs offline once loaded.
 // `serve` is only for trying it out; any static host serves web/ as it is.
+// It is built on ode-http/, a web server framework that lives here for now.
 // ---------------------------------------------------------------------------
 
 import { Build, Artifact } from "std/build";
@@ -20,8 +22,12 @@ export fn build(b: *Build): void {
 
   // Not "src": what calls WebGL cannot link natively (src/logic.test.ode).
   b.tests("src/logic.test.ode");
+  b.tests("ode-http/http.ode");
 
   let serve: *Artifact = b.tool("serve", "tools/serve.ode");
   b.step("serve", "build, then serve web/ on http://localhost:8080")
       .run(serve).arg("web").argOutput(app);
+
+  let hello: *Artifact = b.tool("hello", "ode-http/examples/hello.ode");
+  b.step("hello", "ode-http's example app, on http://localhost:8090").run(hello);
 }

@@ -1,0 +1,66 @@
+// ---------------------------------------------------------------------------
+// Files from a directory, for App.serveStatic.
+//
+// A path naming a directory -- "/" or one ending in a slash -- is its
+// index.html. A path that would climb out of the directory, through "..",
+// is refused, and so is one that is not a regular file.
+// ---------------------------------------------------------------------------
+
+import { Builder, contains, endsWith } from "std/text";
+import { fopen, fclose, fgetc, ferror } from "std/c";
+import { Response } from "./http";
+import { contentTypeOf } from "./mime";
+
+// Sets `response` to send the file at `path` under `dir`; false when there is
+// no such file to send, and `response` is left as it was.
+export fn serveFile(response: *Response, dir: *i8, path: *i8): bool {
+  if (contains(path, "..") || contains(path, "\\")) {
+    return false;
+  }
+  let full: *Builder = Builder.new();
+  full.add(dir);
+  if (!endsWith(dir, "/") && path[0] != '/') {
+    full.push('/');
+  }
+  full.add(path);
+  if (path[0] == 0 || endsWith(path, "/")) {
+    full.add("index.html");
+  }
+  let file: *i8 = full.take();
+
+  // fopen opens a directory too, and reading it is what fails.
+  let stream: *i8 = fopen(file, "rb");
+  if (stream == null) {
+    return false;
+  }
+  let readable: bool = isRegular(stream);
+  fclose(stream);
+  if (!readable) {
+    return false;
+  }
+  response.status = 200;
+  response.file = file;
+  response.setHeader("Content-Type", contentTypeOf(file));
+  return true;
+}
+
+extern fn fseek(stream: *i8, offset: i64, whence: i32): i32;
+extern fn ftell(stream: *i8): i64;
+
+// A directory reads as an error, and seeks to no end.
+fn isRegular(stream: *i8): bool {
+  if (fseek(stream, 0, 2) != 0 || ftell(stream) < 0) {
+    return false;
+  }
+  fseek(stream, 0, 0);
+  fgetc(stream);
+  return ferror(stream) == 0;
+}
+
+// The bytes in an open file, from its start.
+export fn sizeOf(stream: *i8): i64 {
+  fseek(stream, 0, 2);
+  let size: i64 = ftell(stream);
+  fseek(stream, 0, 0);
+  return size;
+}
