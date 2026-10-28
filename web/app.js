@@ -114,7 +114,14 @@ function watchVersion() {
       $('version').textContent = `Version ${event.data.version}`;
     }
   });
+  // A first worker taking over a page loaded from the network is no update:
+  // only a page a worker already served can be the old version.
+  const served = !!worker.controller;
   worker.addEventListener('controllerchange', () => {
+    if (!served) {
+      worker.controller.postMessage('version');
+      return;
+    }
     stale = true;
     $('version').textContent = 'A new version is ready';
     $('update').textContent = 'Restart to update';
