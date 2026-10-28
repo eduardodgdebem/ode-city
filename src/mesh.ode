@@ -26,6 +26,8 @@ export enum Material {
   Water,
   // What is still to be built: drawn see-through, after everything else.
   Ghost,
+  // The glow around a building picked to look at, drawn as a ghost is.
+  Select,
 }
 
 export struct Color {

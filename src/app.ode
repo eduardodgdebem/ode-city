@@ -14,14 +14,14 @@
 
 import { alloc } from "std/mem";
 import { Mesh } from "./mesh";
-import { Vec3 } from "./math";
+import { Vec3, transform } from "./math";
 import { Mode, Phase } from "./timer";
 import { Light, SkyMode, lightAt } from "./sky";
-import { Camera, FRAME_FLOATS, writeFrame } from "./view";
-import { render, startRenderer, uploadCity, uploadSite } from "./render";
+import { Camera, FRAME_FLOATS, INVERSE_VIEW_PROJ, writeFrame } from "./view";
+import { render, startRenderer, uploadCity, uploadSelection, uploadSite } from "./render";
 import {
   Kind, CURB, FLOOR, PITCH, ROAD,
-  buildCity, buildSite, cityCount, cityIsFull, cityPopulation, cityRadius, residentsOf, siteTop, siteX, siteZ, tierOf,
+  buildCity, buildSelection, buildSite, cityCount, lotHeight, pickLot, cityIsFull, cityPopulation, cityRadius, residentsOf, siteTop, siteX, siteZ, tierOf,
 } from "./city";
 import {
   Plan, Session,
@@ -43,11 +43,16 @@ let ASPECT: f32 = 1.0;
 // What the site mesh was last built for: its progress step, and what it is.
 let SITE_STEP: i64 = -1;
 let SITE_SHAPE: i64 = -1;
+// The lot picked to look at, -1 for none, and whether its glow is out of date.
+let SELECTION: *Mesh = null;
+let SELECTED: i32 = -1;
+let SELECTION_CHANGED: bool = true;
 
 export fn init(seed: i32): void {
   if (CITY == null) {
     CITY = Mesh.new();
     SITE = Mesh.new();
+    SELECTION = Mesh.new();
     CAMERA = alloc<Camera>(1);
     *CAMERA = Camera.new();
     FRAME = alloc<f32>(FRAME_FLOATS as i64);
@@ -55,6 +60,8 @@ export fn init(seed: i32): void {
   startGame(seed as u32);
   SITE_STEP = -1;
   SITE_SHAPE = -1;
+  SELECTED = -1;
+  SELECTION_CHANGED = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +87,12 @@ export fn frame(now: f64, dt: f32, width: i32, height: i32, hours: f32, time: f3
     uploadCity(CITY);
     RADIUS = cityRadius();
     aim = true;
+    SELECTION_CHANGED = true;
+  }
+  if (SELECTION_CHANGED) {
+    buildSelection(SELECTION, SELECTED);
+    uploadSelection(SELECTION);
+    SELECTION_CHANGED = false;
   }
 
   let building: bool = underConstruction();
@@ -114,6 +127,28 @@ export fn camera_drag(dx: f32, dy: f32, now: f64): void {
 
 export fn camera_zoom(by: f32, now: f64): void {
   CAMERA.zoom(by, now);
+}
+
+// Picks what stands under a point of the canvas, given from -1 to 1 across
+// and up as the last frame drew it: the index of its lot, which is that of
+// the session that built it, or -1 for none.
+export fn pick(x: f32, y: f32): i32 {
+  let inverse: *f32 = FRAME + INVERSE_VIEW_PROJ;
+  let near: Vec3 = transform(inverse, Vec3.new(x, y, -1.0));
+  let far: Vec3 = transform(inverse, Vec3.new(x, y, 1.0));
+  return select(pickLot(near, far.sub(near).normalized()));
+}
+
+// Picks lot `index`, or none for -1.
+export fn select(index: i32): i32 {
+  SELECTED = index;
+  SELECTION_CHANGED = true;
+  return index;
+}
+
+// How tall what stands on lot `index` is, in storeys.
+export fn lot_storeys(index: i32): f32 {
+  return (lotHeight(index) - CURB) / FLOOR;
 }
 
 // ---------------------------------------------------------------------------

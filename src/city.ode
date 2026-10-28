@@ -21,7 +21,7 @@
 import { List } from "std/list";
 import { allocZeroed } from "std/mem";
 import { Color, Material, Mesh } from "./mesh";
-import { squareRoot } from "./math";
+import { Vec3, absolute, larger, smaller, squareRoot } from "./math";
 import { Rng, hash2 } from "./rand";
 
 export enum Kind {
@@ -66,6 +66,9 @@ let LOTS: *List<Lot> = null;
 // Per block, whether anything stands on it yet: a block gets its streets
 // with its first building.
 let ACTIVE: *bool = null;
+// Per lot, how high what stands on it reaches, as last built: what a tap is
+// tested against.
+let HEIGHTS: *f32 = null;
 
 let CLIP: f32 = 1000000.0;
 let GHOST: bool = false;
@@ -87,6 +90,7 @@ export fn resetCity(seed: u32): void {
     PLOTS = List<Plot>.new();
     LOTS = List<Lot>.new();
     ACTIVE = allocZeroed<bool>((SIDE * SIDE) as i64);
+    HEIGHTS = allocZeroed<f32>((SIDE * SIDE * 4) as i64);
   }
   PLOTS.clear();
   LOTS.clear();
@@ -247,7 +251,9 @@ export fn buildCity(mesh: *Mesh): void {
     }
   }
   for (i in 0..LOTS.count) {
+    TOP = CURB;
     raise(mesh, i, LOTS.at(i));
+    HEIGHTS[i] = TOP;
   }
   woods(mesh);
 }
@@ -288,6 +294,79 @@ export fn buildSite(mesh: *Mesh, minutes: i32, progress: f32, working: bool): vo
   SITE_X = plot.x;
   SITE_Z = plot.z;
   SITE_TOP = top;
+}
+
+// ---------------------------------------------------------------------------
+// Picking
+// ---------------------------------------------------------------------------
+
+// How high what stands on lot `index` reaches.
+export fn lotHeight(index: i32): f32 {
+  return HEIGHTS[index];
+}
+
+// The lot a ray from `origin` along `dir` meets first, taking each lot as a
+// box over its ground as high as what stands on it; -1 for none.
+export fn pickLot(origin: Vec3, dir: Vec3): i32 {
+  let half: f32 = LOT * 0.5;
+  let best: i32 = -1;
+  let nearest: f32 = NOWHERE;
+  for (i in 0..LOTS.count) {
+    let plot: Plot = PLOTS.at(i);
+    let span: Span = Span { near: 0.0, far: NOWHERE };
+    span.clip(origin.x, dir.x, plot.x - half, plot.x + half);
+    span.clip(origin.y, dir.y, 0.0, HEIGHTS[i]);
+    span.clip(origin.z, dir.z, plot.z - half, plot.z + half);
+    if (span.near <= span.far && span.near < nearest) {
+      nearest = span.near;
+      best = i as i32;
+    }
+  }
+  return best;
+}
+
+// Where along a ray it is inside a box: narrowed an axis at a time, and
+// empty, near past far, once it misses.
+struct Span {
+  near: f32,
+  far: f32,
+
+  fn clip(self: *Span, origin: f32, dir: f32, low: f32, high: f32): void {
+    if (absolute(dir) < 0.000001) {
+      if (origin < low || origin > high) {
+        self.far = -1.0;
+      }
+      return;
+    }
+    let a: f32 = (low - origin) / dir;
+    let b: f32 = (high - origin) / dir;
+    self.near = larger(self.near, smaller(a, b));
+    self.far = smaller(self.far, larger(a, b));
+  }
+}
+
+// A glow around lot `index`, a frame on its ground and a shell over what
+// stands on it, for the one picked; nothing for -1.
+export fn buildSelection(mesh: *Mesh, index: i32): void {
+  mesh.clear();
+  if (index < 0 || index as i64 >= LOTS.count) {
+    return;
+  }
+  let plot: Plot = PLOTS.at(index as i64);
+  let half: f32 = LOT * 0.5 - 0.04;
+  let rim: f32 = 0.16;
+  let y0: f32 = CURB + 0.03;
+  let y1: f32 = CURB + 0.07;
+  let c: Color = Color.hex(0xffc35c);
+  let x0: f32 = plot.x - half;
+  let x1: f32 = plot.x + half;
+  let z0: f32 = plot.z - half;
+  let z1: f32 = plot.z + half;
+  mesh.box(x0, y0, z0, x1, y1, z0 + rim, c, Material.Select);
+  mesh.box(x0, y0, z1 - rim, x1, y1, z1, c, Material.Select);
+  mesh.box(x0, y0, z0 + rim, x0 + rim, y1, z1 - rim, c, Material.Select);
+  mesh.box(x1 - rim, y0, z0 + rim, x1, y1, z1 - rim, c, Material.Select);
+  mesh.box(x0 + rim, CURB, z0 + rim, x1 - rim, HEIGHTS[index] + 0.2, z1 - rim, c, Material.Select);
 }
 
 // The streets around a block and the sidewalk on it.

@@ -300,9 +300,12 @@ function resize() {
 function listen(target) {
   const pointers = new Map();
   let pinch = 0;
+  // A press that barely moves and lets go soon is a tap, which picks.
+  let press = null;
   target.addEventListener('pointerdown', (event) => {
     target.setPointerCapture(event.pointerId);
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
+    press = pointers.size === 1 ? { x: event.clientX, y: event.clientY, at: Date.now() } : null;
   });
   target.addEventListener('pointermove', (event) => {
     const before = pointers.get(event.pointerId);
@@ -325,6 +328,15 @@ function listen(target) {
   const release = (event) => {
     pointers.delete(event.pointerId);
     pinch = 0;
+    if (press && event.type === 'pointerup'
+        && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 8 && Date.now() - press.at < 500) {
+      const box = target.getBoundingClientRect();
+      inspect(ode.pick(
+        ((event.clientX - box.left) / box.width) * 2 - 1,
+        1 - ((event.clientY - box.top) / box.height) * 2,
+      ));
+    }
+    press = null;
   };
   target.addEventListener('pointerup', release);
   target.addEventListener('pointercancel', release);
@@ -332,6 +344,60 @@ function listen(target) {
     event.preventDefault();
     ode.camera_zoom(Math.exp(event.deltaY * 0.0012), Date.now());
   }, { passive: false });
+}
+
+// What stands on lot `index` -- the session's that built it -- in a card;
+// -1 puts the card away.
+function inspect(index) {
+  const card = $('inspect');
+  if (index < 0) {
+    card.classList.remove('show');
+    return;
+  }
+  const kind = ode.session_kind(index);
+  const minutes = ode.session_minutes(index);
+  const when = new Date(ode.session_time(index)).toLocaleString(undefined, {
+    day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+  const storeys = Math.max(1, Math.round(ode.lot_storeys(index)));
+  let title;
+  let rows;
+  if (kind === KIND.park) {
+    title = 'Park';
+    rows = [['Opened', when], ['For', 'a full pomodoro cycle']];
+  } else if (kind === KIND.ruin) {
+    title = 'Ruin';
+    rows = [['Planned', `${duration(minutes)} of focus`], ['Abandoned', when]];
+  } else {
+    const tier = TIERS[ode.tier_of(minutes)].name;
+    title = tier[0].toUpperCase() + tier.slice(1);
+    rows = [
+      ['Focus', duration(minutes)],
+      ['Residents', ode.residents_of(minutes).toLocaleString()],
+      ['Height', `${storeys} ${storeys === 1 ? 'storey' : 'storeys'}`],
+      ['Built', when],
+    ];
+  }
+  $('inspect-title').textContent = title;
+  $('inspect-number').textContent = `No. ${index + 1} of ${ode.session_count()}`;
+  const list = $('inspect-rows');
+  list.replaceChildren();
+  for (const [name, value] of rows) {
+    const term = document.createElement('dt');
+    term.textContent = name;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    list.append(term, detail);
+  }
+  card.classList.add('show');
+}
+
+function duration(minutes) {
+  const hours = Math.floor(minutes / 60);
+  if (hours === 0) {
+    return `${minutes} min`;
+  }
+  return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +412,7 @@ function changeSettings(change) {
 }
 
 function bindUi() {
+  $('inspect-close').addEventListener('click', () => inspect(ode.select(-1)));
   $('collapse').addEventListener('click', () => setCompact(true));
   $('mini').addEventListener('click', () => setCompact(false));
   setCompact(state.settings.compact);

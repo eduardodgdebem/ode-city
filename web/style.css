@@ -549,6 +549,81 @@ body.break .mini-clock {
   color: var(--amber);
 }
 
+/* --- A building, tapped ------------------------------------------------- */
+
+.inspect {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 76px);
+  left: 16px;
+  width: min(280px, calc(100% - 32px));
+  padding: 14px 16px 12px;
+  border-radius: 18px;
+  background: var(--glass-strong);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid var(--line);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  transition: opacity 0.25s, transform 0.25s;
+}
+
+.inspect.show {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.inspect-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.inspect h2 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--amber);
+}
+
+.inspect-head p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.inspect-close {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink-soft);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.inspect dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  margin: 12px 0 0;
+  font-size: 14px;
+}
+
+.inspect dt {
+  color: var(--ink-soft);
+}
+
+.inspect dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* --- Settings ----------------------------------------------------------- */
 
 dialog {

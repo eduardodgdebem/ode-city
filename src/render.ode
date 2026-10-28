@@ -114,11 +114,20 @@ let SCENE_FS: *i8 = `
 
   void main() {
     bool ghost = vMat == 7;
-    if ((uPass < 0.5) == ghost) {
+    bool picked = vMat == 8;
+    if ((uPass < 0.5) == (ghost || picked)) {
       discard;
     }
     vec3 n = normalize(vNormal);
     vec3 toCam = normalize(uCamPos - vPos);
+
+    if (picked) {
+      float rim = pow(1.0 - abs(dot(n, toCam)), 2.0);
+      float pulse = 0.8 + 0.2 * sin(uTime * 3.0);
+      float floorGlow = n.y > 0.5 && vPos.y < uCurb + 0.1 ? 0.75 : 0.0;
+      outColor = vec4(vec3(1.0, 0.78, 0.38) * (0.9 + rim), (0.1 + rim * 0.3 + floorGlow) * pulse);
+      return;
+    }
 
     if (ghost) {
       float scan = step(0.5, fract(vPos.y * 3.0 - uTime * 0.6));
@@ -213,7 +222,7 @@ let DEPTH_FS: *i8 = `
   precision mediump float;
   flat in int vMat;
   void main() {
-    if (vMat == 7) {
+    if (vMat >= 7) {
       discard;
     }
   }
@@ -309,6 +318,7 @@ struct Gpu {
   skyArray: i32,
   city: GpuMesh,
   site: GpuMesh,
+  selection: GpuMesh,
   shadowTexture: i32,
   shadowFramebuffer: i32,
 }
@@ -381,6 +391,7 @@ export fn startRenderer(pitch: f32, road: f32, curb: f32, floor: f32): bool {
   GPU.skyArray = gl_create_vertex_array();
   GPU.city = gpuMesh();
   GPU.site = gpuMesh();
+  GPU.selection = gpuMesh();
 
   // The grid the windows and road markings are painted on never changes.
   gl_use_program(scene);
@@ -419,6 +430,10 @@ export fn uploadCity(mesh: *Mesh): void {
 
 export fn uploadSite(mesh: *Mesh): void {
   upload(&GPU.site, mesh);
+}
+
+export fn uploadSelection(mesh: *Mesh): void {
+  upload(&GPU.selection, mesh);
 }
 
 fn draw(mesh: GpuMesh): void {
@@ -489,12 +504,13 @@ export fn render(f: *f32, width: i32, height: i32, time: f32): void {
   draw(GPU.city);
   draw(GPU.site);
 
-  // The ghost last, see-through, writing no depth.
+  // The ghost and the glow last, see-through, writing no depth.
   gl_enable(BLEND);
   gl_blend_func(SRC_ALPHA, ONE_MINUS_SRC_ALPHA);
   gl_depth_mask(0);
   gl_uniform1f(s.pass, 1.0);
   draw(GPU.site);
+  draw(GPU.selection);
   gl_depth_mask(1);
   gl_disable(BLEND);
 }

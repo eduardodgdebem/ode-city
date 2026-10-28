@@ -96,6 +96,17 @@
     <svg class="chevron" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m6 15 6-6 6 6"/></svg>
   </button>
 
+  <aside class="inspect" id="inspect" aria-live="polite">
+    <div class="inspect-head">
+      <div>
+        <h2 id="inspect-title"></h2>
+        <p id="inspect-number"></p>
+      </div>
+      <button class="inspect-close" id="inspect-close" aria-label="Close">×</button>
+    </div>
+    <dl id="inspect-rows"></dl>
+  </aside>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <dialog id="settings">
