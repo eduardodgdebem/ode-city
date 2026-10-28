@@ -557,7 +557,14 @@ function bindUi() {
     renderSky();
     renderTotals();
     renderHistory();
-    settings.classList.remove('closing');
+    if (closing) {
+      // Opened again on its way down: it comes back up instead.
+      const slide = closing;
+      closing = null;
+      slide.cancel();
+      settings.classList.remove('closing');
+      return;
+    }
     settings.showModal();
   });
   // Every way out -- ×, Escape, a tap beside the sheet -- slides it away
@@ -605,9 +612,12 @@ function bindUi() {
   });
 }
 
+// The sheet's slide down while it is closing, or null.
+let closing = null;
+
 function closeSettings() {
   const settings = $('settings');
-  if (!settings.open || settings.classList.contains('closing')) {
+  if (!settings.open || closing) {
     return;
   }
   settings.classList.add('closing');
@@ -621,10 +631,23 @@ function closeSettings() {
     done();
     return;
   }
-  settings.animate(
+  const slide = settings.animate(
     [{ transform: 'none' }, { transform: 'translateY(calc(100% + 40px))' }],
     { duration: 340, easing: 'cubic-bezier(0.4, 0, 0.9, 0.6)', fill: 'forwards' },
-  ).finished.then(done, done);
+  );
+  closing = slide;
+  // Held down until closed, then let go, or it would hold the sheet down
+  // out of sight the next time it opens. A slide called off by opening
+  // again closes nothing.
+  const finish = () => {
+    if (closing !== slide) {
+      return;
+    }
+    closing = null;
+    done();
+    slide.cancel();
+  };
+  slide.finished.then(finish, finish);
 }
 
 // Minimized, the panel gives way to a pill with the clock, so the city
