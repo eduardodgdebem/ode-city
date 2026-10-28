@@ -5,7 +5,7 @@
 // the background so the next launch gets whatever was deployed since.
 // Bump VERSION to drop the old cache outright.
 
-const VERSION = 'ode-city-3';
+const VERSION = 'ode-city-4';
 const SHELL = [
   './',
   'index.html',

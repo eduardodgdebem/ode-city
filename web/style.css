@@ -43,9 +43,13 @@ button {
 
 #scene {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
   width: 100%;
-  height: 100%;
+  /* An app on the iOS home screen, under a translucent status bar, is laid
+     out a status bar short of the screen's foot; reaching past it covers
+     what would be left bare. */
+  height: calc(100% + env(safe-area-inset-top));
   touch-action: none;
   display: block;
 }
@@ -636,7 +640,7 @@ dialog {
   background: transparent;
   color: var(--ink);
   width: min(460px, calc(100% - 24px));
-  max-height: calc(100% - 48px);
+  max-height: calc(100% - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px);
   margin: auto auto calc(env(safe-area-inset-bottom) + 12px);
 }
 
@@ -651,7 +655,7 @@ dialog::backdrop {
   border-radius: 28px;
   background: rgba(20, 24, 40, 0.94);
   border: 1px solid var(--line);
-  max-height: calc(100dvh - 60px);
+  max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px);
   overflow-y: auto;
   user-select: text;
 }
