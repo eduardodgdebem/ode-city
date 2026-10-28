@@ -24,7 +24,13 @@ const TIERS = [
 
 const $ = (id) => document.getElementById(id);
 
-let state = load();
+// ?demo, or ?demo=300: a city of that many sessions to look at, made up on
+// the spot and never saved, so the real one is left as it was.
+const DEMO = new URLSearchParams(location.search).has('demo')
+  ? Number(new URLSearchParams(location.search).get('demo')) || 400
+  : 0;
+
+let state = DEMO ? demo(DEMO) : load();
 let ode;
 let canvas;
 let lastTick = 0;
@@ -118,8 +124,28 @@ function fresh() {
   };
 }
 
+// `count` sessions over the past months, mostly buildings of every size.
+function demo(count) {
+  const state = fresh();
+  state.seed = 20261028;
+  let random = 1;
+  const next = () => (random = (random * 16807) % 2147483647) / 2147483647;
+  const minutes = [10, 15, 25, 25, 30, 45, 50, 60, 75, 90, 100, 120];
+  const day = 86400000;
+  const start = Date.now() - count * day / 4;
+  for (let i = 0; i < count; i++) {
+    const roll = next();
+    const kind = roll < 0.04 ? KIND.ruin : roll < 0.12 ? KIND.park : KIND.building;
+    state.sessions.push({ t: start + i * day / 4, m: minutes[Math.floor(next() * minutes.length)], k: kind });
+  }
+  return state;
+}
+
 // The module holds the truth; this writes it down.
 function save() {
+  if (DEMO) {
+    return;
+  }
   const sessions = [];
   for (let i = 0; i < ode.session_count(); i++) {
     sessions.push({ t: ode.session_time(i), m: ode.session_minutes(i), k: ode.session_kind(i) });
@@ -434,6 +460,9 @@ function setCompact(on) {
   mini.setAttribute('aria-hidden', String(!on));
   mini.tabIndex = on ? 0 : -1;
   $('panel').inert = on;
+  if (DEMO) {
+    return;
+  }
   try {
     localStorage.setItem(STORE, JSON.stringify(state));
   } catch {
