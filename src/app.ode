@@ -177,11 +177,14 @@ export fn set_strict(on: i32): void {
   setStrict(on != 0);
 }
 
-// 0 the local hour, 1 always day, 2 always night.
+// 0 the local hour, 1 always day, 2 always night, 3 always sunrise, 4
+// always sunset.
 export fn set_sky(mode: i32): void {
   SKY = match (mode) {
     1 => .Day,
     2 => .Night,
+    3 => .Dawn,
+    4 => .Dusk,
     else => .Auto,
   };
 }

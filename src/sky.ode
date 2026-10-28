@@ -3,9 +3,10 @@
 // light.
 //
 // The hour is the viewer's own, so the city has the morning, dusk and night
-// they do. Three palettes -- day, dusk, night -- are blended by how high the
-// sun stands; below the horizon the moon lights the city, dimmer and bluer,
-// and the windows come on.
+// they do. Palettes -- day, the low sun's, night -- are blended by how high
+// the sun stands, the low sun's being dawn's pinks and peach before noon and
+// dusk's deep orange after; below the horizon the moon lights the city,
+// dimmer and bluer, and the windows come on.
 // ---------------------------------------------------------------------------
 
 import { PI, Vec3, clamp, cosine, power, sine } from "./math";
@@ -15,6 +16,9 @@ export enum SkyMode {
   Auto,
   Day,
   Night,
+  // Fixed at the sun's rising and its setting, to see them at any hour.
+  Dawn,
+  Dusk,
 }
 
 // Everything the shaders need of the light, in linear colour.
@@ -47,8 +51,12 @@ fn day(): Palette {
   return Palette { zenith: 0x4f8fd6, horizon: 0xcfe3f1, color: 0xfff4e0, intensity: 2.3, sky: 0x9cb9db, ground: 0x8f8a72 };
 }
 
+fn dawn(): Palette {
+  return Palette { zenith: 0x5a6aa8, horizon: 0xffb09a, color: 0xffa98a, intensity: 2.0, sky: 0xb49ccc, ground: 0x9a6a6e };
+}
+
 fn dusk(): Palette {
-  return Palette { zenith: 0x34457a, horizon: 0xf2a477, color: 0xffb07a, intensity: 1.6, sky: 0x7d7fa8, ground: 0x7a5f55 };
+  return Palette { zenith: 0x2e3a78, horizon: 0xff9050, color: 0xff8a3c, intensity: 2.1, sky: 0x9a7090, ground: 0x94583a };
 }
 
 fn night(): Palette {
@@ -74,22 +82,30 @@ export fn lightAt(localHours: f32, mode: SkyMode): Light {
     .Auto => localHours,
     .Day => 14.5,
     .Night => 22.5,
+    .Dawn => 6.4,
+    .Dusk => 17.6,
   };
   let angle: f32 = (hours - 6.0) / 12.0 * PI;
   let elevation: f32 = sine(angle);
   let sun: Vec3 = Vec3.new(cosine(angle) * 0.8, elevation, 0.45).normalized();
 
+  // The low sun's palette: the morning's or the evening's.
+  let low: Palette = dusk();
+  if (hours > 2.0 && hours < 12.0) {
+    low = dawn();
+  }
   let a: Palette = day();
   let b: Palette = day();
   let t: f32 = 0.0;
-  if (elevation > 0.25) {
+  if (elevation > 0.4) {
     t = 0.0;
   } else if (elevation > -0.05) {
-    a = dusk();
-    t = (elevation + 0.05) / 0.3;
+    // A long golden hour: the low sun's light holds until it is well up.
+    a = low;
+    t = power((elevation + 0.05) / 0.45, 1.4);
   } else if (elevation > -0.25) {
     a = night();
-    b = dusk();
+    b = low;
     t = (elevation + 0.25) / 0.2;
   } else {
     a = night();
@@ -136,6 +152,15 @@ test "dusk is warmer than day" {
   let evening: Light = lightAt(18.2, SkyMode.Auto);
   let afternoon: Light = lightAt(14.0, SkyMode.Auto);
   assert(evening.horizon.x / evening.horizon.z > afternoon.horizon.x / afternoon.horizon.z, "dusk is not warmer");
+}
+
+test "dawn and dusk have their own colours" {
+  let morning: Light = lightAt(3.0, SkyMode.Dawn);
+  let evening: Light = lightAt(3.0, SkyMode.Dusk);
+  let apart: f32 = morning.night - evening.night;
+  assert(apart < 0.0001 && apart > -0.0001, "the sun is as high at both");
+  assert(morning.horizon.z > evening.horizon.z, "dawn's horizon is pinker, dusk's more orange");
+  assert(morning.night < 0.5 && morning.sun.y > 0.0, "the sun is up at dawn");
 }
 
 test "a fixed sky ignores the hour" {
