@@ -32,7 +32,6 @@ You need the Ode compiler, and LLVM with `wasm-ld` for the wasm32 target.
 ode build          # src/ -> web/city.wasm
 ode build test     # the tests
 ode build serve    # serve web/ on http://localhost:8080
-ode build hello    # ode-http's example app on http://localhost:8090
 ```
 
 ## Layout
@@ -41,8 +40,5 @@ ode build hello    # ode-http's example app on http://localhost:8090
   city, its meshes, the camera, the sky, and the renderer with its shaders.
 - `web/` -- the page: the panel, storage, input, the WebGL bindings, and the
   service worker. Any static host serves it as it is.
-- `ode-http/` -- a small web server framework for Ode: routing, middleware,
-  requests, responses and static files. It lives here for now; see its
-  [README](ode-http/README.md).
 - `tools/serve.ode` -- the static file server for trying the app out, a few
-  lines on top of ode-http.
+  lines on top of Ode's std/http.
