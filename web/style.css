@@ -47,9 +47,9 @@ button {
   left: 0;
   width: 100%;
   /* An app on the iOS home screen, under a translucent status bar, is laid
-     out a status bar short of the screen's foot; reaching past it covers
-     what would be left bare. */
-  height: calc(100% + env(safe-area-inset-top));
+     out short of the screen's foot; reaching past it, by as much as
+     app.js measures it short, covers what would be left bare. */
+  height: calc(100% + var(--screen-gap, 0px));
   touch-action: none;
   display: block;
 }
@@ -812,6 +812,20 @@ dialog::backdrop {
 
 .about button:disabled {
   opacity: 0.6;
+}
+
+.fine.screen-info {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+/* Measures the safe area, for the line above. */
+.safe-probe {
+  position: fixed;
+  visibility: hidden;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 .sheet-actions {

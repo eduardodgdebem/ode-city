@@ -153,6 +153,18 @@ async function checkForUpdate() {
   location.reload();
 }
 
+// How the page is laid out against the screen, shown in Settings: on iOS,
+// an app on the home screen can be laid out shorter than the screen.
+function fitScreen() {
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  const portrait = innerHeight > innerWidth;
+  const gap = standalone && portrait ? Math.max(0, screen.height - innerHeight) : 0;
+  document.documentElement.style.setProperty('--screen-gap', `${gap}px`);
+  const probe = getComputedStyle($('safe-probe'));
+  $('screen-info').textContent = `${standalone ? 'app' : 'browser'} · page ${innerWidth}×${innerHeight}`
+    + ` · screen ${screen.width}×${screen.height} · safe ${probe.paddingTop} ${probe.paddingBottom}`;
+}
+
 // ---------------------------------------------------------------------------
 // Storage
 // ---------------------------------------------------------------------------
@@ -469,6 +481,8 @@ function changeSettings(change) {
 function bindUi() {
   $('inspect-close').addEventListener('click', () => inspect(ode.select(-1)));
   $('update').addEventListener('click', checkForUpdate);
+  fitScreen();
+  addEventListener('resize', fitScreen);
   $('collapse').addEventListener('click', () => setCompact(true));
   $('mini').addEventListener('click', () => setCompact(false));
   setCompact(state.settings.compact);
