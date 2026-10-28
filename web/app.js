@@ -13,7 +13,7 @@ const STORE = 'ode-city/v1';
 const PHASE = { idle: 0, focus: 1, short: 2, long: 3 };
 const EVENT = { none: 0, focusDone: 1, cycleDone: 2, breakDone: 3, roundDone: 4 };
 const KIND = { building: 0, ruin: 1, park: 2 };
-const SKY = { auto: 0, day: 1, night: 2 };
+const SKY = { auto: 0, day: 1, night: 2, dawn: 3, dusk: 4 };
 const TIERS = [
   { name: 'house', article: 'a' },
   { name: 'corner shop', article: 'a' },
@@ -555,8 +555,20 @@ function bindUi() {
     $('strict').checked = state.settings.strict;
     $('sound').checked = state.settings.sound;
     renderSky();
+    renderTotals();
     renderHistory();
+    settings.classList.remove('closing');
     settings.showModal();
+  });
+  // Every way out -- ×, Escape, a tap beside the sheet -- slides it away
+  // first, as it slid in.
+  settings.querySelector('form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    closeSettings();
+  });
+  settings.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeSettings();
   });
   $('strict').addEventListener('change', (event) => changeSettings((s) => {
     s.strict = event.target.checked;
@@ -584,13 +596,35 @@ function bindUi() {
     keepAwake(false);
     save();
     render();
-    settings.close();
+    closeSettings();
   });
   settings.addEventListener('click', (event) => {
     if (event.target === settings) {
-      settings.close();
+      closeSettings();
     }
   });
+}
+
+function closeSettings() {
+  const settings = $('settings');
+  if (!settings.open || settings.classList.contains('closing')) {
+    return;
+  }
+  settings.classList.add('closing');
+  const done = () => {
+    settings.classList.remove('closing');
+    settings.close();
+  };
+  // Closed once the slide down has played out, not at a guess at when.
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced || !settings.animate) {
+    done();
+    return;
+  }
+  settings.animate(
+    [{ transform: 'none' }, { transform: 'translateY(calc(100% + 40px))' }],
+    { duration: 340, easing: 'cubic-bezier(0.4, 0, 0.9, 0.6)', fill: 'forwards' },
+  ).finished.then(done, done);
 }
 
 // Minimized, the panel gives way to a pill with the clock, so the city
@@ -737,10 +771,45 @@ function renderStats() {
   $('stat-streak').textContent = ode.streak_days(now, offset);
 }
 
+const SKY_NOTES = {
+  auto: 'Follows your clock: sunrise at 6, sunset at 6.',
+  dawn: 'Always sunrise: pink and peach, the sun just up.',
+  day: 'Always early afternoon.',
+  dusk: 'Always sunset: the golden hour, the sun going down.',
+  night: 'Always night, the windows lit.',
+};
+
 function renderSky() {
   for (const button of $('sky').querySelectorAll('button')) {
-    button.classList.toggle('on', button.dataset.sky === state.settings.sky);
+    const on = button.dataset.sky === state.settings.sky;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-checked', String(on));
+    button.setAttribute('role', 'radio');
   }
+  $('sky-note').textContent = SKY_NOTES[state.settings.sky] ?? '';
+}
+
+// Everything the city has seen, in four numbers.
+function renderTotals() {
+  let minutes = 0;
+  let sessions = 0;
+  let parks = 0;
+  let ruins = 0;
+  for (let i = 0; i < ode.session_count(); i++) {
+    const kind = ode.session_kind(i);
+    if (kind === KIND.building) {
+      minutes += ode.session_minutes(i);
+      sessions++;
+    } else if (kind === KIND.park) {
+      parks++;
+    } else {
+      ruins++;
+    }
+  }
+  $('total-focus').textContent = minutes >= 60 ? `${Math.floor(minutes / 60)}h` : `${minutes}m`;
+  $('total-sessions').textContent = sessions.toLocaleString();
+  $('total-parks').textContent = parks.toLocaleString();
+  $('total-ruins').textContent = ruins.toLocaleString();
 }
 
 function renderHistory() {
@@ -757,11 +826,10 @@ function renderHistory() {
     const item = document.createElement('li');
     const name = TIERS[ode.tier_of(minutes)].name;
     const what = kind === KIND.ruin ? 'Ruin' : kind === KIND.park ? 'Park' : name[0].toUpperCase() + name.slice(1);
-    if (kind === KIND.ruin) {
-      item.className = 'ruin';
-    }
+    item.className = kind === KIND.ruin ? 'ruin' : kind === KIND.park ? 'park' : '';
     const when = new Date(ode.session_time(i)).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    item.innerHTML = `<span class="what">${what}${kind === KIND.park ? '' : ` · ${minutes}m`}</span><span>${when}</span>`;
+    const length = kind === KIND.park ? '' : `<span class="minutes">${duration(minutes)}</span>`;
+    item.innerHTML = `<span class="dot"></span><span class="what">${what}</span>${length}<span class="when">${when}</span>`;
     list.append(item);
   }
 }
