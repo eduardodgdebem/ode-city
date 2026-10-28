@@ -5,3 +5,4 @@
 
 import { startGame } from "./game";
 import { Camera } from "./view";
+import { buildLife } from "./life";

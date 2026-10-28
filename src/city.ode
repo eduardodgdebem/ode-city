@@ -55,7 +55,7 @@ export let CURB: f32 = 0.12;
 export let FLOOR: f32 = 0.9;
 
 // Blocks from the centre, each way, that the city may fill: 2500 plots.
-let REACH: i32 = 12;
+export let REACH: i32 = 12;
 let SIDE: i32 = REACH * 2 + 1;
 
 let NOWHERE: f32 = 1000000.0;
@@ -155,6 +155,15 @@ export fn addToCity(kind: Kind, minutes: i32): void {
   let plot: Plot = PLOTS.at(LOTS.count);
   LOTS.push(Lot { kind: kind, minutes: minutes });
   ACTIVE[blockIndex(plot.blockX, plot.blockZ)] = true;
+}
+
+export fn citySeed(): u32 {
+  return SEED;
+}
+
+// Whether block (bx, bz) has its streets yet: what stands on it, or will.
+export fn blockActive(bx: i32, bz: i32): bool {
+  return ACTIVE[blockIndex(bx, bz)];
 }
 
 export fn cityCount(): i32 {

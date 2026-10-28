@@ -28,6 +28,8 @@ export enum Material {
   Ghost,
   // The glow around a building picked to look at, drawn as a ghost is.
   Select,
+  // A light of its own -- a car's lamps -- brighter as night falls.
+  Lamp,
 }
 
 export struct Color {

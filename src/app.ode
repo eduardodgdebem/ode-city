@@ -18,7 +18,8 @@ import { Vec3, transform } from "./math";
 import { Mode, Phase } from "./timer";
 import { Light, SkyMode, lightAt } from "./sky";
 import { Camera, FRAME_FLOATS, INVERSE_VIEW_PROJ, writeFrame } from "./view";
-import { render, startRenderer, uploadCity, uploadSelection, uploadSite } from "./render";
+import { render, startRenderer, uploadCity, uploadLife, uploadSelection, uploadSite } from "./render";
+import { buildLife } from "./life";
 import {
   Kind, CURB, FLOOR, PITCH, ROAD,
   buildCity, buildSelection, buildSite, cityCount, lotHeight, pickLot, cityIsFull, cityPopulation, cityRadius, residentsOf, siteTop, siteX, siteZ, tierOf,
@@ -45,6 +46,8 @@ let SITE_STEP: i64 = -1;
 let SITE_SHAPE: i64 = -1;
 // The lot picked to look at, -1 for none, and whether its glow is out of date.
 let SELECTION: *Mesh = null;
+// The people, cars and birds, laid out afresh every frame.
+let LIFE: *Mesh = null;
 let SELECTED: i32 = -1;
 let SELECTION_CHANGED: bool = true;
 
@@ -53,6 +56,7 @@ export fn init(seed: i32): void {
     CITY = Mesh.new();
     SITE = Mesh.new();
     SELECTION = Mesh.new();
+    LIFE = Mesh.new();
     CAMERA = alloc<Camera>(1);
     *CAMERA = Camera.new();
     FRAME = alloc<f32>(FRAME_FLOATS as i64);
@@ -115,6 +119,9 @@ export fn frame(now: f64, dt: f32, width: i32, height: i32, hours: f32, time: f3
   if (aim) {
     CAMERA.aim(RADIUS, ASPECT, building, Vec3.new(siteX(), 0.0, siteZ()), siteTop());
   }
+
+  buildLife(LIFE, time, RADIUS);
+  uploadLife(LIFE);
 
   CAMERA.update(dt, now);
   writeFrame(FRAME, *CAMERA, lightAt(hours, SKY), ASPECT, RADIUS);

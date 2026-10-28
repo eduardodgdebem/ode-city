@@ -193,6 +193,9 @@ let SCENE_FS: *i8 = `
     if (vMat == 4 || vMat == 3) {
       occlusion = 0.95;
     }
+    if (vMat == 9) {
+      glow = base * (0.25 + uNight * 2.2);
+    }
     vec3 color = base * (ambient * occlusion + uSunColor * ndl * shadow);
     vec3 halfway = normalize(uSunDir + toCam);
     color += uSunColor * pow(max(dot(n, halfway), 0.0), 60.0) * shine * shadow;
@@ -319,6 +322,7 @@ struct Gpu {
   city: GpuMesh,
   site: GpuMesh,
   selection: GpuMesh,
+  life: GpuMesh,
   shadowTexture: i32,
   shadowFramebuffer: i32,
 }
@@ -392,6 +396,7 @@ export fn startRenderer(pitch: f32, road: f32, curb: f32, floor: f32): bool {
   GPU.city = gpuMesh();
   GPU.site = gpuMesh();
   GPU.selection = gpuMesh();
+  GPU.life = gpuMesh();
 
   // The grid the windows and road markings are painted on never changes.
   gl_use_program(scene);
@@ -432,6 +437,10 @@ export fn uploadSite(mesh: *Mesh): void {
   upload(&GPU.site, mesh);
 }
 
+export fn uploadLife(mesh: *Mesh): void {
+  upload(&GPU.life, mesh);
+}
+
 export fn uploadSelection(mesh: *Mesh): void {
   upload(&GPU.selection, mesh);
 }
@@ -464,6 +473,7 @@ export fn render(f: *f32, width: i32, height: i32, time: f32): void {
   gl_uniform_matrix4fv(GPU.depthLightViewProj, f + LIGHT_VIEW_PROJ);
   draw(GPU.city);
   draw(GPU.site);
+  draw(GPU.life);
 
   gl_bind_framebuffer(0);
   gl_viewport(0, 0, width, height);
@@ -503,6 +513,7 @@ export fn render(f: *f32, width: i32, height: i32, time: f32): void {
   gl_uniform1f(s.pass, 0.0);
   draw(GPU.city);
   draw(GPU.site);
+  draw(GPU.life);
 
   // The ghost and the glow last, see-through, writing no depth.
   gl_enable(BLEND);

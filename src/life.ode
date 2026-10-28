@@ -1,0 +1,233 @@
+// ---------------------------------------------------------------------------
+// Life: people on the sidewalks, cars on the streets, birds overhead.
+//
+// None of it is kept. Every frame it is laid out afresh from the time, each
+// one wherever its own loop has taken it by then: a car round the block it
+// belongs to, in the lane beside it, a walker round the sidewalk's edge, a
+// flock in a wide circle over the city. What a block gets is drawn from the
+// city's seed and the block, so the same city always has the same traffic.
+//
+// Blocks share what there is to go round, so a big city is as busy as a
+// small one is, not a hundred times busier to draw.
+// ---------------------------------------------------------------------------
+
+import { Color, Material, Mesh } from "./mesh";
+import { Vec3, cosine, sine, smaller } from "./math";
+import { Rng, hash2 } from "./rand";
+import { CURB, PITCH, REACH, blockActive, citySeed } from "./city";
+
+let CARS: f32 = 90.0;
+let WALKERS: f32 = 150.0;
+// From a block's centre to the lane that goes round it, and to where its
+// people walk, just inside the sidewalk's edge.
+let LANE: f32 = 4.6;
+let SIDEWALK: f32 = 3.91;
+
+export fn buildLife(mesh: *Mesh, time: f32, radius: f32): void {
+  mesh.clear();
+  let first: i32 = 0 - REACH;
+  let last: i32 = REACH + 1;
+  let active: f32 = 0.0;
+  for (bz in first..last) {
+    for (bx in first..last) {
+      if (blockActive(bx, bz)) {
+        active += 1.0;
+      }
+    }
+  }
+  if (active == 0.0) {
+    return;
+  }
+  let carOdds: f32 = smaller(1.0, CARS / active);
+  let walkerOdds: f32 = smaller(1.0, WALKERS / (active * 3.0));
+  for (bz in first..last) {
+    for (bx in first..last) {
+      if (blockActive(bx, bz)) {
+        let rng: Rng = Rng.new(hash2(citySeed(), bx * 101 + bz, 77));
+        let cx: f32 = bx as f32 * PITCH;
+        let cz: f32 = bz as f32 * PITCH;
+        if (rng.chance(carOdds)) {
+          let speed: f32 = rng.range(2.0, 3.4);
+          car(mesh, cx, cz, rng.range(0.0, 40.0) + time * speed, Color.hex(carColor(rng.below(8))));
+        }
+        for (i in 0..3) {
+          if (rng.chance(walkerOdds)) {
+            let pace: f32 = rng.range(0.35, 0.6);
+            let shirt: Color = Color.hex(shirtColor(rng.below(8)));
+            let skin: Color = Color.hex(skinColor(rng.below(4)));
+            walker(mesh, cx, cz, rng.range(0.0, 40.0) + time * pace, rng.chance(0.5), time + rng.float() * 3.0, shirt, skin);
+          }
+        }
+      }
+    }
+  }
+  let flocks: i32 = 2;
+  if (radius > 40.0) {
+    flocks = 3;
+  }
+  if (radius > 80.0) {
+    flocks = 4;
+  }
+  for (f in 0..flocks) {
+    flock(mesh, f, time, radius);
+  }
+}
+
+// Where `distance` along a square loop of half-side `half` comes to, round
+// a block's centre: a point, and the way it is heading, along x or z.
+struct Leg {
+  x: f32,
+  z: f32,
+  dx: f32,
+  dz: f32,
+}
+
+fn around(cx: f32, cz: f32, half: f32, distance: f32): Leg {
+  let side: f32 = half * 2.0;
+  let along: f32 = wrap(distance, side * 4.0);
+  let leg: i32 = (along / side) as i32;
+  let u: f32 = along - leg as f32 * side - half;
+  return match (leg) {
+    0 => Leg { x: cx + u, z: cz + half, dx: 1.0, dz: 0.0 },
+    1 => Leg { x: cx + half, z: cz - u, dx: 0.0, dz: -1.0 },
+    2 => Leg { x: cx - u, z: cz - half, dx: -1.0, dz: 0.0 },
+    else => Leg { x: cx - half, z: cz + u, dx: 0.0, dz: 1.0 },
+  };
+}
+
+fn wrap(value: f32, length: f32): f32 {
+  let turns: f32 = (value / length) as i64 as f32;
+  return value - turns * length;
+}
+
+// A box `length` long and `width` wide at (x, z), turned the way `at` heads,
+// from `ahead` in front of the point to `behind` it.
+fn along(mesh: *Mesh, at: Leg, ahead: f32, behind: f32, width: f32, y0: f32, y1: f32, c: Color, m: Material): void {
+  let w: f32 = width * 0.5;
+  let a: f32 = at.x + at.dx * ahead;
+  let b: f32 = at.x - at.dx * behind;
+  let p: f32 = at.z + at.dz * ahead;
+  let q: f32 = at.z - at.dz * behind;
+  if (at.dx == 0.0) {
+    mesh.box(at.x - w, y0, smaller(p, q), at.x + w, y1, p + q - smaller(p, q), c, m);
+  } else {
+    mesh.box(smaller(a, b), y0, at.z - w, a + b - smaller(a, b), y1, at.z + w, c, m);
+  }
+}
+
+fn car(mesh: *Mesh, cx: f32, cz: f32, distance: f32, paint: Color): void {
+  let at: Leg = around(cx, cz, LANE, distance);
+  along(mesh, at, 0.5, 0.5, 0.5, 0.06, 0.32, paint, Material.Plain);
+  along(mesh, at, 0.18, 0.32, 0.44, 0.32, 0.52, Color.hex(0x2c3440), Material.Plain);
+  along(mesh, at, 0.53, -0.47, 0.4, 0.16, 0.24, Color.hex(0xfff1c8), Material.Lamp);
+}
+
+fn walker(mesh: *Mesh, cx: f32, cz: f32, distance: f32, backwards: bool, stride: f32, shirt: Color, skin: Color): void {
+  let way: f32 = distance;
+  if (backwards) {
+    way = 0.0 - distance + 1000.0;
+  }
+  let at: Leg = around(cx, cz, SIDEWALK, way);
+  let bob: f32 = sine(stride * 9.0);
+  if (bob < 0.0) {
+    bob = 0.0 - bob;
+  }
+  // A little taller than true to scale, to be made out from up high.
+  let y: f32 = CURB + bob * 0.04;
+  mesh.box(at.x - 0.09, y, at.z - 0.09, at.x + 0.09, y + 0.42, at.z + 0.09, shirt, Material.Plain);
+  mesh.box(at.x - 0.07, y + 0.42, at.z - 0.07, at.x + 0.07, y + 0.58, at.z + 0.07, skin, Material.Plain);
+}
+
+// Seven birds in a loose V, wheeling round the city, each beating its wings
+// in its own time.
+fn flock(mesh: *Mesh, index: i32, time: f32, radius: f32): void {
+  let rng: Rng = Rng.new(hash2(citySeed(), index, 991));
+  let wide: f32 = radius * rng.range(0.35, 0.8) + 8.0;
+  let high: f32 = rng.range(12.0, 24.0);
+  let turn: f32 = rng.range(0.05, 0.09);
+  if (rng.chance(0.5)) {
+    turn = 0.0 - turn;
+  }
+  let angle: f32 = rng.range(0.0, 6.28) + time * turn;
+  let centre: Vec3 = Vec3.new(cosine(angle) * wide, high + sine(time * 0.3 + index as f32) * 1.5, sine(angle) * wide);
+  // Heading round the circle, and to its side.
+  let ahead: Vec3 = Vec3.new(0.0 - sine(angle), 0.0, cosine(angle));
+  if (turn < 0.0) {
+    ahead = ahead.scale(-1.0);
+  }
+  let side: Vec3 = Vec3.new(0.0 - ahead.z, 0.0, ahead.x);
+  let feathers: Color = Color.hex(0x2b2f36);
+  for (i in 0..7) {
+    let row: f32 = ((i + 1) / 2) as f32;
+    let wing: f32 = 1.0;
+    if (i % 2 == 0) {
+      wing = -1.0;
+    }
+    let p: Vec3 = centre.add(ahead.scale(0.0 - row * 0.9 + rng.range(-0.2, 0.2)))
+        .add(side.scale(wing * row * 0.8 + rng.range(-0.2, 0.2)))
+        .add(Vec3.new(0.0, rng.range(-0.4, 0.4), 0.0));
+    bird(mesh, p, ahead, side, sine(time * 9.0 + rng.range(0.0, 6.28)), feathers);
+  }
+}
+
+fn bird(mesh: *Mesh, p: Vec3, ahead: Vec3, side: Vec3, flap: f32, c: Color): void {
+  let up: Vec3 = Vec3.new(0.0, 1.0, 0.0);
+  let nose: Vec3 = p.add(ahead.scale(0.22));
+  let tail: Vec3 = p.sub(ahead.scale(0.18));
+  let lift: Vec3 = up.scale(flap * 0.22);
+  let left: Vec3 = p.add(side.scale(0.5)).add(lift).sub(ahead.scale(0.08));
+  let right: Vec3 = p.sub(side.scale(0.5)).add(lift).sub(ahead.scale(0.08));
+  mesh.triangle(nose, left, tail, up, c, Material.Plain);
+  mesh.triangle(nose, tail, right, up, c, Material.Plain);
+}
+
+fn carColor(i: i32): i32 {
+  return match (i) {
+    0 => 0xd9443a,
+    1 => 0x3a6fd9,
+    2 => 0xf2f0ea,
+    3 => 0x2a2d33,
+    4 => 0xe8b93a,
+    5 => 0x9aa3ad,
+    6 => 0x3f8f5a,
+    else => 0x7b3fa0,
+  };
+}
+
+fn shirtColor(i: i32): i32 {
+  return match (i) {
+    0 => 0xe0533d,
+    1 => 0x3d7be0,
+    2 => 0xf0c53a,
+    3 => 0x52a86b,
+    4 => 0xf2efe8,
+    5 => 0x34363d,
+    6 => 0xd46fa8,
+    else => 0x5fc4c9,
+  };
+}
+
+fn skinColor(i: i32): i32 {
+  return match (i) {
+    0 => 0xf1c9a5,
+    1 => 0xd9a37c,
+    2 => 0xa86f4c,
+    else => 0x6b4630,
+  };
+}
+
+test "a loop round a block comes back where it began" {
+  let start: Leg = around(0.0, 0.0, 4.0, 1.0);
+  let lap: Leg = around(0.0, 0.0, 4.0, 33.0);
+  assert(start.x - lap.x < 0.001 && lap.x - start.x < 0.001, "same x after a lap");
+  assert(start.z - lap.z < 0.001 && lap.z - start.z < 0.001, "same z after a lap");
+}
+
+test "every leg of the loop stays on its side" {
+  for (i in 0..32) {
+    let at: Leg = around(10.0, 20.0, 4.0, i as f32);
+    let onX: bool = at.x == 6.0 || at.x == 14.0;
+    let onZ: bool = at.z == 16.0 || at.z == 24.0;
+    assert(onX || onZ, "on the square");
+  }
+}
