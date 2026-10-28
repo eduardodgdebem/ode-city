@@ -56,21 +56,25 @@
 
     <section class="controls" id="pomodoro-controls" hidden>
       <div class="steppers">
-        <div class="stepper" data-key="focus" data-min="5" data-max="120" data-step="5">
-          <span class="label">Focus</span>
-          <div class="row"><button aria-label="Less focus">−</button><span class="value">25</span><button aria-label="More focus">+</button></div>
+        <div class="stepper" data-key="focus" data-min="1" data-max="180" data-step="5">
+          <label class="label" for="step-focus">Focus</label>
+          <input class="value" id="step-focus" type="number" inputmode="numeric" min="1" max="180" step="1" enterkeyhint="done">
+          <div class="buttons"><button type="button" aria-label="Less focus">−</button><button type="button" aria-label="More focus">+</button></div>
         </div>
-        <div class="stepper" data-key="short" data-min="1" data-max="30" data-step="1">
-          <span class="label">Break</span>
-          <div class="row"><button aria-label="Shorter break">−</button><span class="value">5</span><button aria-label="Longer break">+</button></div>
+        <div class="stepper" data-key="short" data-min="1" data-max="60" data-step="1">
+          <label class="label" for="step-short">Break</label>
+          <input class="value" id="step-short" type="number" inputmode="numeric" min="1" max="60" step="1" enterkeyhint="done">
+          <div class="buttons"><button type="button" aria-label="Shorter break">−</button><button type="button" aria-label="Longer break">+</button></div>
         </div>
-        <div class="stepper" data-key="long" data-min="5" data-max="60" data-step="5">
-          <span class="label">Long break</span>
-          <div class="row"><button aria-label="Shorter long break">−</button><span class="value">15</span><button aria-label="Longer long break">+</button></div>
+        <div class="stepper" data-key="long" data-min="1" data-max="90" data-step="5">
+          <label class="label" for="step-long">Long break</label>
+          <input class="value" id="step-long" type="number" inputmode="numeric" min="1" max="90" step="1" enterkeyhint="done">
+          <div class="buttons"><button type="button" aria-label="Shorter long break">−</button><button type="button" aria-label="Longer long break">+</button></div>
         </div>
-        <div class="stepper" data-key="rounds" data-min="2" data-max="8" data-step="1">
-          <span class="label">Rounds</span>
-          <div class="row"><button aria-label="Fewer rounds">−</button><span class="value">4</span><button aria-label="More rounds">+</button></div>
+        <div class="stepper" data-key="rounds" data-min="2" data-max="12" data-step="1">
+          <label class="label" for="step-rounds">Rounds</label>
+          <input class="value" id="step-rounds" type="number" inputmode="numeric" min="2" max="12" step="1" enterkeyhint="done">
+          <div class="buttons"><button type="button" aria-label="Fewer rounds">−</button><button type="button" aria-label="More rounds">+</button></div>
         </div>
       </div>
     </section>

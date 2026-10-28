@@ -315,37 +315,79 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .stepper {
-  padding: 8px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 6px 6px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.06);
 }
 
 .stepper .label {
-  display: block;
-  font-size: 10.5px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--ink-soft);
   white-space: nowrap;
 }
 
-.stepper .row {
+/* The number is a field: tapped, it takes any value typed. */
+.stepper .value {
+  width: 100%;
+  padding: 1px 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  -moz-appearance: textfield;
+  appearance: textfield;
+  -webkit-user-select: text;
+  user-select: text;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.stepper .value::-webkit-inner-spin-button,
+.stepper .value::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.stepper .value:focus {
+  outline: none;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1.5px var(--amber);
+}
+
+.stepper .buttons {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  gap: 4px;
+  width: 100%;
 }
 
 .stepper button {
-  width: 28px;
-  height: 32px;
-  font-size: 20px;
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 18px;
+  line-height: 1;
   color: var(--ink-soft);
+  transition: background 0.15s;
 }
 
-.stepper .value {
-  font-size: 18px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+.stepper button:active {
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .rounds {

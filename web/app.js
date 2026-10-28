@@ -534,12 +534,29 @@ function bindUi() {
   for (const stepper of document.querySelectorAll('.stepper')) {
     const key = stepper.dataset.key;
     const [less, more] = stepper.querySelectorAll('button');
+    const field = stepper.querySelector('.value');
     const step = Number(stepper.dataset.step);
+    const clamp = (value) => Math.min(Number(stepper.dataset.max), Math.max(Number(stepper.dataset.min), value));
     const change = (by) => changeSettings((s) => {
-      s[key] = Math.min(Number(stepper.dataset.max), Math.max(Number(stepper.dataset.min), s[key] + by * step));
+      s[key] = clamp(s[key] + by * step);
     });
     less.addEventListener('click', () => change(-1));
     more.addEventListener('click', () => change(1));
+    // Any number typed, kept within the stepper's range; anything else
+    // puts back what was there.
+    field.addEventListener('focus', () => field.select());
+    field.addEventListener('keydown', (event) => event.key === 'Enter' && field.blur());
+    field.addEventListener('change', () => {
+      const typed = Math.round(Number(field.value));
+      if (field.value.trim() === '' || !Number.isFinite(typed)) {
+        render();
+        return;
+      }
+      changeSettings((s) => {
+        s[key] = clamp(typed);
+      });
+    });
+    field.addEventListener('blur', () => render());
   }
 
   $('primary').addEventListener('click', () => {
@@ -731,7 +748,11 @@ function render() {
   const chosen = ode.tier_of(s.minutes);
   $('tiers').querySelectorAll('span').forEach((label, i) => label.classList.toggle('on', i === chosen));
   for (const stepper of document.querySelectorAll('.stepper')) {
-    stepper.querySelector('.value').textContent = s[stepper.dataset.key];
+    const field = stepper.querySelector('.value');
+    // Not while it is being typed into.
+    if (document.activeElement !== field) {
+      field.value = s[stepper.dataset.key];
+    }
   }
 
   const tier = TIERS[ode.tier_of(ode.build_minutes())];
