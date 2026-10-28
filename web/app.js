@@ -94,8 +94,63 @@ async function boot() {
   setTimeout(() => $('loading').remove(), 900);
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
+    watchVersion();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Version and updates
+// ---------------------------------------------------------------------------
+
+// Set once a newer worker has taken over: this page is the old version
+// until it is reloaded.
+let stale = false;
+
+function watchVersion() {
+  const worker = navigator.serviceWorker;
+  worker.addEventListener('message', (event) => {
+    if (event.data && event.data.version && !stale) {
+      $('version').textContent = `Version ${event.data.version}`;
+    }
+  });
+  worker.addEventListener('controllerchange', () => {
+    stale = true;
+    $('version').textContent = 'A new version is ready';
+    $('update').textContent = 'Restart to update';
+  });
+  worker.ready.then(() => worker.controller && worker.controller.postMessage('version'));
+}
+
+// Asks for a newer version, and restarts into it if there is one.
+async function checkForUpdate() {
+  const button = $('update');
+  const registration = 'serviceWorker' in navigator && await navigator.serviceWorker.getRegistration();
+  if (stale || !registration) {
+    location.reload();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Checking…';
+  try {
+    await registration.update();
+  } catch {
+    // Offline: what is here is the latest there is to be had.
+  }
+  const next = registration.installing || registration.waiting;
+  if (!next) {
+    button.textContent = 'Up to date';
+    setTimeout(() => {
+      button.textContent = 'Check for updates';
+      button.disabled = false;
+    }, 2000);
+    return;
+  }
+  button.textContent = 'Updating…';
+  if (next.state !== 'activated') {
+    await new Promise((resolve) => next.addEventListener('statechange', () => next.state === 'activated' && resolve()));
+  }
+  location.reload();
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +468,7 @@ function changeSettings(change) {
 
 function bindUi() {
   $('inspect-close').addEventListener('click', () => inspect(ode.select(-1)));
+  $('update').addEventListener('click', checkForUpdate);
   $('collapse').addEventListener('click', () => setCompact(true));
   $('mini').addEventListener('click', () => setCompact(false));
   setCompact(state.settings.compact);

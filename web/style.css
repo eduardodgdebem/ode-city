@@ -790,6 +790,30 @@ dialog::backdrop {
   fill: currentColor;
 }
 
+.about {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 6px 6px 6px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 15px;
+}
+
+.about button {
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.about button:disabled {
+  opacity: 0.6;
+}
+
 .sheet-actions {
   display: flex;
   gap: 10px;

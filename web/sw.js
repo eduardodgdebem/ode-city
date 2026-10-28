@@ -3,9 +3,14 @@
 // Everything the app is made of is cached when the worker installs. After
 // that, a request is answered from the cache at once, and fetched again in
 // the background so the next launch gets whatever was deployed since.
-// Bump VERSION to drop the old cache outright.
+// Bump VERSION to drop the old cache outright; the page shows its number,
+// so it can be told which deploy it is running.
+//
+// Both go to the network past the browser's own HTTP cache, which GitHub
+// Pages lets keep a file ten minutes: an update would otherwise fetch the
+// same old files again.
 
-const VERSION = 'ode-city-4';
+const VERSION = 'ode-city-5';
 const SHELL = [
   './',
   'index.html',
@@ -21,7 +26,11 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(VERSION).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches.open(VERSION)
+      .then((cache) => cache.addAll(SHELL.map((url) => new Request(url, { cache: 'reload' }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (event) => {
@@ -40,7 +49,7 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.open(VERSION).then(async (cache) => {
       const cached = await cache.match(request, { ignoreSearch: true });
-      const fresh = fetch(request)
+      const fresh = fetch(request, { cache: 'no-cache' })
         .then((response) => {
           if (response.ok) {
             cache.put(request, response.clone());
@@ -51,4 +60,11 @@ self.addEventListener('fetch', (event) => {
       return cached ?? fresh;
     }),
   );
+});
+
+// The page asks which version is serving it.
+self.addEventListener('message', (event) => {
+  if (event.data === 'version') {
+    event.source.postMessage({ version: VERSION.replace('ode-city-', '') });
+  }
 });
