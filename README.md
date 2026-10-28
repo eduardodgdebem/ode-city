@@ -12,7 +12,12 @@ with WebGL2: shadows, lit windows at night, and a sky that follows your local
 time.
 
 It is a PWA: it installs to the home screen, runs offline, and keeps
-everything on the device.
+everything on the device. Try it at **https://eduardodgdebem.github.io/ode-city/**
+-- on an iPhone, open it in Safari and choose Share → Add to Home Screen.
+
+Every push to `main` publishes `web/` there (`.github/workflows/pages.yml`).
+`web/city.wasm` is committed, so run `ode build` before committing a change
+to `src/`.
 
 ## Building
 
