@@ -102,7 +102,7 @@
         <h2 id="inspect-title"></h2>
         <p id="inspect-number"></p>
       </div>
-      <button class="inspect-close" id="inspect-close" aria-label="Close">×</button>
+      <button class="close" id="inspect-close" aria-label="Close">×</button>
     </div>
     <dl id="inspect-rows"></dl>
   </aside>
@@ -111,7 +111,10 @@
 
   <dialog id="settings">
     <form method="dialog" class="sheet">
-      <h2>Settings</h2>
+      <div class="sheet-head">
+        <h2>Settings</h2>
+        <button class="close" value="close" aria-label="Close settings">×</button>
+      </div>
       <label class="switch">
         <span>
           <strong>Strict mode</strong>

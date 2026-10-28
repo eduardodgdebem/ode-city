@@ -602,7 +602,7 @@ body.break .mini-clock {
   color: var(--ink-faint);
 }
 
-.inspect-close {
+.close {
   width: 28px;
   height: 28px;
   flex: none;
@@ -660,8 +660,21 @@ dialog::backdrop {
   user-select: text;
 }
 
-.sheet h2 {
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin: 0 0 14px;
+}
+
+.sheet-head .close {
+  width: 32px;
+  height: 32px;
+  font-size: 20px;
+}
+
+.sheet h2 {
+  margin: 0;
   font-size: 22px;
 }
 
