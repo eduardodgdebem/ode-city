@@ -336,17 +336,43 @@ function pageReturned() {
 // The loop
 // ---------------------------------------------------------------------------
 
+// The city is drawn every frame only while it is being touched. Left to
+// itself -- the camera turning slowly, the traffic going round -- every
+// other frame does, and behind another window a few frames a second: most
+// of what the GPU spends is on each frame drawn, however little is in it.
+const TOUCHED_FOR = 3000;
+const IDLE_FRAME = 1000 / 30;
+const AWAY_FRAME = 1000 / 10;
+
 let previous = performance.now();
+let touched = -Infinity;
+
+// Something was done to the city: draw it at full rate for a while.
+function touch() {
+  touched = performance.now();
+}
+
+function frameInterval(time) {
+  if (!document.hasFocus()) {
+    return AWAY_FRAME;
+  }
+  return time - touched < TOUCHED_FOR ? 0 : IDLE_FRAME;
+}
 
 function frame(time) {
-  const dt = Math.min((time - previous) / 1000, 0.1);
-  previous = time;
   const now = Date.now();
   if (now - lastTick > 250) {
     lastTick = now;
     catchUp(now);
     renderClock(now);
   }
+  // A little early is on time: frames do not come at exact intervals.
+  if (time - previous < frameInterval(time) - 4) {
+    requestAnimationFrame(frame);
+    return;
+  }
+  const dt = Math.min((time - previous) / 1000, 0.1);
+  previous = time;
 
   const [width, height] = resize();
   const local = new Date(now);
@@ -374,6 +400,10 @@ function listen(target) {
   let pinch = 0;
   // A press that barely moves and lets go soon is a tap, which picks.
   let press = null;
+  target.addEventListener('pointerdown', touch, { passive: true });
+  target.addEventListener('wheel', touch, { passive: true });
+  // A mouse merely passing over changes nothing; a drag does.
+  target.addEventListener('pointermove', (event) => event.buttons && touch(), { passive: true });
   target.addEventListener('pointerdown', (event) => {
     target.setPointerCapture(event.pointerId);
     pointers.set(event.pointerId, [event.clientX, event.clientY]);
