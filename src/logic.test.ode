@@ -1,0 +1,7 @@
+// The tests: every module that runs without a browser, and so every test in
+// them -- `ode test` runs the tests of what a file imports. app.ode,
+// render.ode and gl.ode are left out: they call WebGL, which only the page
+// has, and a native test program could not link them.
+
+import { startGame } from "./game";
+import { Camera } from "./view";

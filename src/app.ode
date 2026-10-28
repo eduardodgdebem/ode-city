@@ -1,0 +1,358 @@
+// ---------------------------------------------------------------------------
+// What the page calls: the module's exports.
+//
+// The page is left only what a browser alone can do -- the DOM,
+// localStorage, sound, input events, and WebGL's calls themselves, which it
+// hands in as imports (gl.ode) -- and gives this module the time, the
+// canvas's size and the viewer's local hour. Everything else is decided
+// here: the timer, what sessions earn, the city, the camera, the light, and
+// every draw.
+//
+// Each animation frame the page calls `frame`, which rebuilds and uploads a
+// mesh when it is out of date, moves the camera, and draws (render.ode).
+// ---------------------------------------------------------------------------
+
+import { alloc } from "std/mem";
+import { Mesh } from "./mesh";
+import { Vec3 } from "./math";
+import { Mode, Phase } from "./timer";
+import { Light, SkyMode, lightAt } from "./sky";
+import { Camera, FRAME_FLOATS, writeFrame } from "./view";
+import { render, startRenderer, uploadCity, uploadSite } from "./render";
+import {
+  Kind, CURB, FLOOR, PITCH, ROAD,
+  buildCity, buildSite, cityCount, cityIsFull, cityPopulation, cityRadius, residentsOf, siteTop, siteX, siteZ, tierOf,
+} from "./city";
+import {
+  Plan, Session,
+  buildMinutes, buildProgress, buildingCount, clockRemaining, cycleUnderway, focusMinutes, giveUp, hidden, hiddenAt,
+  lastMinutes, minutesToday, plan, resetCycle, restore, returned, sessions, setHiddenAt, setStrict, start, startGame,
+  streak, takeCityChange, tick, timer, underConstruction,
+} from "./game";
+
+// Given where a check failed and why, when one does.
+extern fn panic(where: *i8, message: *i8): void;
+
+let CITY: *Mesh = null;
+let SITE: *Mesh = null;
+let CAMERA: *Camera = null;
+let FRAME: *f32 = null;
+let SKY: SkyMode = SkyMode.Auto;
+let RADIUS: f32 = 10.0;
+let ASPECT: f32 = 1.0;
+// What the site mesh was last built for: its progress step, and what it is.
+let SITE_STEP: i64 = -1;
+let SITE_SHAPE: i64 = -1;
+
+export fn init(seed: i32): void {
+  if (CITY == null) {
+    CITY = Mesh.new();
+    SITE = Mesh.new();
+    CAMERA = alloc<Camera>(1);
+    *CAMERA = Camera.new();
+    FRAME = alloc<f32>(FRAME_FLOATS as i64);
+  }
+  startGame(seed as u32);
+  SITE_STEP = -1;
+  SITE_SHAPE = -1;
+}
+
+// ---------------------------------------------------------------------------
+// Each frame
+// ---------------------------------------------------------------------------
+
+// Compiles the shaders and makes what lives on the GPU; 0 when a shader
+// would not compile.
+export fn render_start(): i32 {
+  return flag(startRenderer(PITCH, ROAD, CURB, FLOOR));
+}
+
+// Brings the meshes up to date, moves the camera on, and draws the frame on
+// a canvas of `width` by `height` pixels. `time` is in seconds, for what
+// moves on its own.
+export fn frame(now: f64, dt: f32, width: i32, height: i32, hours: f32, time: f32): void {
+  if (width > 0 && height > 0) {
+    ASPECT = width as f32 / height as f32;
+  }
+  let aim: bool = false;
+  if (takeCityChange()) {
+    buildCity(CITY);
+    uploadCity(CITY);
+    RADIUS = cityRadius();
+    aim = true;
+  }
+
+  let building: bool = underConstruction();
+  let progress: f64 = buildProgress(now);
+  let minutes: i32 = buildMinutes();
+  let shape: i64 = (cityCount() as i64 * 1000 + minutes as i64) * 2;
+  if (building) {
+    shape += 1;
+  }
+  let step: i64 = (progress * 600.0) as i64;
+  if (shape != SITE_SHAPE || step != SITE_STEP) {
+    buildSite(SITE, minutes, progress as f32, building);
+    uploadSite(SITE);
+    if (shape != SITE_SHAPE) {
+      aim = true;
+    }
+    SITE_SHAPE = shape;
+    SITE_STEP = step;
+  }
+  if (aim) {
+    CAMERA.aim(RADIUS, ASPECT, building, Vec3.new(siteX(), 0.0, siteZ()), siteTop());
+  }
+
+  CAMERA.update(dt, now);
+  writeFrame(FRAME, *CAMERA, lightAt(hours, SKY), ASPECT, RADIUS);
+  render(FRAME, width, height, time);
+}
+
+export fn camera_drag(dx: f32, dy: f32, now: f64): void {
+  CAMERA.drag(dx, dy, now);
+}
+
+export fn camera_zoom(by: f32, now: f64): void {
+  CAMERA.zoom(by, now);
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+// mode: 0 a single countdown, 1 a pomodoro cycle.
+export fn set_plan(mode: i32, minutes: i32, focus: i32, shortBreak: i32, longBreak: i32, rounds: i32): void {
+  let next: *Plan = plan();
+  next.mode = modeOf(mode);
+  next.minutes = minutes;
+  next.focus = focus;
+  next.shortBreak = shortBreak;
+  next.longBreak = longBreak;
+  next.rounds = rounds;
+}
+
+export fn set_strict(on: i32): void {
+  setStrict(on != 0);
+}
+
+// 0 the local hour, 1 always day, 2 always night.
+export fn set_sky(mode: i32): void {
+  SKY = match (mode) {
+    1 => .Day,
+    2 => .Night,
+    else => .Auto,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The timer and the game
+// ---------------------------------------------------------------------------
+
+export fn timer_start(now: f64): void {
+  start(now);
+}
+
+// One phase at most: 0 nothing, 1 a countdown's building done, 2 a pomodoro
+// cycle done (its building and a park), 3 a break over, 4 a pomodoro round
+// done. Called until it gives 0.
+export fn timer_tick(now: f64): i32 {
+  return tick(now) as i32;
+}
+
+// 1 when a focus session was given up, and is a ruin now.
+export fn timer_give_up(now: f64): i32 {
+  return flag(giveUp(now));
+}
+
+// Abandons a cycle between rounds; 1 when that left a ruin.
+export fn timer_reset_cycle(now: f64): i32 {
+  return flag(resetCycle(now));
+}
+
+// 1 while a pomodoro cycle has rounds done and rounds to go.
+export fn cycle_underway(): i32 {
+  return flag(cycleUnderway());
+}
+
+export fn page_hidden(now: f64): void {
+  hidden(now);
+}
+
+// 1 when strict mode brought the construction down while the page was away.
+export fn page_returned(now: f64): i32 {
+  return flag(returned(now));
+}
+
+export fn hidden_at(): f64 {
+  return hiddenAt();
+}
+
+export fn set_hidden_at(at: f64): void {
+  setHiddenAt(at);
+}
+
+export fn clock_remaining(now: f64): f64 {
+  return clockRemaining(now);
+}
+
+export fn timer_progress(now: f64): f64 {
+  return timer().progress(now);
+}
+
+export fn timer_phase(): i32 {
+  return timer().phase as i32;
+}
+
+export fn timer_mode(): i32 {
+  return timer().mode as i32;
+}
+
+export fn timer_round(): i32 {
+  return timer().round;
+}
+
+export fn timer_started_at(): f64 {
+  return timer().startedAt;
+}
+
+export fn timer_duration(): f64 {
+  return timer().duration;
+}
+
+export fn timer_focus(): i32 {
+  return timer().focusMinutes;
+}
+
+export fn timer_short(): i32 {
+  return timer().shortMinutes;
+}
+
+export fn timer_long(): i32 {
+  return timer().longMinutes;
+}
+
+export fn timer_rounds(): i32 {
+  return timer().rounds;
+}
+
+// Puts back a timer saved before the page was closed.
+export fn timer_restore(mode: i32, phase: i32, round: i32, startedAt: f64, duration: f64,
+    focus: i32, shortBreak: i32, longBreak: i32, rounds: i32): void {
+  timer().mode = modeOf(mode);
+  timer().phase = match (phase) {
+    1 => .Focus,
+    2 => .ShortBreak,
+    3 => .LongBreak,
+    else => .Idle,
+  };
+  timer().round = round;
+  timer().startedAt = startedAt;
+  timer().duration = duration;
+  timer().focusMinutes = focus;
+  timer().shortMinutes = shortBreak;
+  timer().longMinutes = longBreak;
+  timer().rounds = rounds;
+}
+
+// The minutes the next focus session runs, or the running one's.
+export fn focus_minutes(): i32 {
+  return focusMinutes();
+}
+
+// The minutes the building going up stands for: a countdown's, or a whole
+// pomodoro cycle's focus time.
+export fn build_minutes(): i32 {
+  return buildMinutes();
+}
+
+// How much of it is up, from 0 to 1.
+export fn build_progress(now: f64): f64 {
+  return buildProgress(now);
+}
+
+// The minutes of the building the last event or ruin was about.
+export fn last_minutes(): i32 {
+  return lastMinutes();
+}
+
+// ---------------------------------------------------------------------------
+// Sessions, for the page to store and to list
+// ---------------------------------------------------------------------------
+
+// kind: 0 a building, 1 a ruin, 2 a park.
+export fn session_restore(time: f64, minutes: i32, kind: i32): void {
+  restore(time, minutes, kindOf(kind));
+}
+
+export fn session_count(): i32 {
+  return sessions().count as i32;
+}
+
+export fn session_time(index: i32): f64 {
+  return sessions().at(index as i64).time;
+}
+
+export fn session_minutes(index: i32): i32 {
+  return sessions().at(index as i64).minutes;
+}
+
+export fn session_kind(index: i32): i32 {
+  return sessions().at(index as i64).kind as i32;
+}
+
+// ---------------------------------------------------------------------------
+// Stats. `offset` is JavaScript's getTimezoneOffset().
+// ---------------------------------------------------------------------------
+
+export fn building_count(): i32 {
+  return buildingCount();
+}
+
+export fn minutes_today(now: f64, offset: i32): i32 {
+  return minutesToday(now, offset);
+}
+
+export fn streak_days(now: f64, offset: i32): i32 {
+  return streak(now, offset);
+}
+
+export fn city_population(): i32 {
+  return cityPopulation();
+}
+
+export fn city_full(): i32 {
+  return flag(cityIsFull());
+}
+
+// 0 a house, 1 a shop, 2 apartments, 3 offices, 4 a tower.
+export fn tier_of(minutes: i32): i32 {
+  return tierOf(minutes);
+}
+
+export fn residents_of(minutes: i32): i32 {
+  return residentsOf(minutes);
+}
+
+// ---------------------------------------------------------------------------
+
+fn flag(value: bool): i32 {
+  if (value) {
+    return 1;
+  }
+  return 0;
+}
+
+fn modeOf(mode: i32): Mode {
+  if (mode == 1) {
+    return Mode.Pomodoro;
+  }
+  return Mode.Timer;
+}
+
+fn kindOf(kind: i32): Kind {
+  return match (kind) {
+    1 => .Ruin,
+    2 => .Park,
+    else => .Building,
+  };
+}

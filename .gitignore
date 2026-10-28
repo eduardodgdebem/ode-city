@@ -1,0 +1,4 @@
+# What `ode build` makes: the serve tool, and the stamps that say what is up to date.
+build/
+*.stamp
+.DS_Store

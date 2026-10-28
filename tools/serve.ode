@@ -1,0 +1,217 @@
+// ---------------------------------------------------------------------------
+// A static file server, for trying the app out: `ode build serve`.
+//
+//   serve <dir> [ignored...] [port]
+//
+// It answers GET with the file under <dir>, a process per connection, and
+// closes each connection after answering. A connection gets a process of its
+// own because browsers open some before they have anything to ask -- Safari
+// does it on every page -- and one waited on in the server itself would hold
+// up every other request behind it. That is all a PWA needs: once its
+// service worker has the files, the app runs with no server at all. A
+// service worker only registers on localhost or over HTTPS, so on a phone
+// reached through this Mac's address the app runs, but not offline; host
+// web/ on any HTTPS static host for that.
+// ---------------------------------------------------------------------------
+
+import { OS, Os } from "std/target";
+import { alloc, release } from "std/mem";
+import { Builder, endsWith, contains, equals, parseInt, slice, indexOf } from "std/text";
+import { println, eprintln, flush } from "std/io";
+import { fopen, fclose, fread, write, read } from "std/c";
+
+extern fn socket(domain: i32, kind: i32, protocol: i32): i32;
+extern fn setsockopt(fd: i32, level: i32, name: i32, value: *i8, length: u32): i32;
+extern fn bind(fd: i32, address: *i8, length: u32): i32;
+extern fn listen(fd: i32, backlog: i32): i32;
+extern fn accept(fd: i32, address: *i8, length: *u32): i32;
+extern fn close(fd: i32): i32;
+extern fn signal(number: i32, handler: *i8): *i8;
+extern fn fork(): i32;
+extern fn _exit(code: i32): void;
+
+let AF_INET: i32 = 2;
+let SOCK_STREAM: i32 = 1;
+let SIGPIPE: i32 = 13;
+// What a connection that sends nothing is given before it is closed.
+let READ_TIMEOUT_SECONDS: i64 = 5;
+
+fn main(argc: i32, argv: **i8): i32 {
+  if (argc < 2) {
+    eprintln("usage: serve <dir> [port]");
+    return 2;
+  }
+  let root: *i8 = argv[1];
+  let port: i32 = 8080;
+  if (argc > 2) {
+    port = (parseInt(argv[argc - 1]) ?? 8080) as i32;
+  }
+
+  // A browser that hangs up mid-file must not take the server with it, and
+  // the processes that answered are reaped as they finish.
+  let ignore: *i8 = 1 as isize as *i8;
+  signal(SIGPIPE, ignore);
+  signal(match (OS) { .Linux => 17, else => 20 }, ignore);
+
+  let server: i32 = socket(AF_INET, SOCK_STREAM, 0);
+  let yes: i32 = 1;
+  setsockopt(server, solSocket(), match (OS) { .Linux => 2, else => 4 }, (&yes) as *i8, 4);
+
+  // sockaddr_in, on 0.0.0.0, so a phone on the same network can reach it.
+  let address: *i8 = alloc<i8>(16);
+  for (i in 0..16) {
+    address[i] = 0;
+  }
+  match (OS) {
+    .Linux => {
+      address[0] = AF_INET as i8;
+    }
+    else => {
+      address[0] = 16;
+      address[1] = AF_INET as i8;
+    }
+  }
+  address[2] = ((port >> 8) & 255) as i8;
+  address[3] = (port & 255) as i8;
+  if (bind(server, address, 16) != 0) {
+    eprintln("serve: cannot listen there; is the port taken?");
+    return 1;
+  }
+  listen(server, 16);
+
+  let url: *Builder = Builder.new();
+  url.add("serving ");
+  url.add(root);
+  url.add(" on http://localhost:");
+  url.addInt(port as i64);
+  println(url.take());
+  println("on a phone on this network: http://<this computer's address>, e.g. `ipconfig getifaddr en0`");
+  flush();
+
+  while (true) {
+    let client: i32 = accept(server, null, null);
+    if (client < 0) {
+      continue;
+    }
+    if (fork() == 0) {
+      close(server);
+      serve(client, root);
+      flush();
+      _exit(0);
+    }
+    close(client);
+  }
+}
+
+// In a process of its own: one request, answered, and the connection closed.
+fn serve(client: i32, root: *i8): void {
+  // struct timeval: seconds, then microseconds, which stay zero.
+  let timeout: *i64 = alloc<i64>(2);
+  timeout[0] = READ_TIMEOUT_SECONDS;
+  timeout[1] = 0;
+  setsockopt(client, solSocket(), match (OS) { .Linux => 20, else => 0x1006 }, timeout as *i8, 16);
+
+  let request: *i8 = alloc<i8>(8192);
+  let count: isize = read(client, request, 8191);
+  if (count > 0) {
+    request[count] = 0;
+    answer(client, root, request);
+  }
+  close(client);
+}
+
+fn solSocket(): i32 {
+  return match (OS) { .Linux => 1, else => 0xffff };
+}
+
+fn answer(client: i32, root: *i8, request: *i8): void {
+  if (indexOf(request, "GET ") != 0) {
+    send(client, "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    return;
+  }
+  let end: i64 = indexOf(request + 4, " ");
+  if (end < 0) {
+    return;
+  }
+  let path: *i8 = slice(request, 4, end);
+  let query: i64 = indexOf(path, "?");
+  if (query >= 0) {
+    path = slice(path, 0, query);
+  }
+  if (contains(path, "..")) {
+    send(client, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    return;
+  }
+  if (equals(path, "/")) {
+    path = "/index.html";
+  }
+
+  let full: *i8 = join(root, path);
+  let stream: *i8 = fopen(full, "rb");
+  if (stream == null) {
+    send(client, "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nnot found");
+    println(join("404 ", path));
+    return;
+  }
+  defer fclose(stream);
+
+  let head: *Builder = Builder.new();
+  head.add("HTTP/1.1 200 OK\r\nConnection: close\r\nCache-Control: no-cache\r\nContent-Type: ");
+  head.add(contentType(path));
+  head.add("\r\n\r\n");
+  send(client, head.take());
+
+  let chunk: *i8 = alloc<i8>(65536);
+  defer release<i8>(chunk);
+  let got: isize = fread(chunk, 1, 65536, stream);
+  while (got > 0) {
+    if (write(client, chunk, got) < 0) {
+      return;
+    }
+    got = fread(chunk, 1, 65536, stream);
+  }
+  println(join("200 ", path));
+}
+
+fn join(a: *i8, b: *i8): *i8 {
+  let out: *Builder = Builder.new();
+  out.add(a);
+  out.add(b);
+  return out.take();
+}
+
+fn send(client: i32, text: *i8): void {
+  let length: i64 = 0;
+  while (text[length] != 0) {
+    length += 1;
+  }
+  write(client, text, length as isize);
+}
+
+fn contentType(path: *i8): *i8 {
+  if (endsWith(path, ".html")) {
+    return "text/html; charset=utf-8";
+  }
+  if (endsWith(path, ".js")) {
+    return "text/javascript; charset=utf-8";
+  }
+  if (endsWith(path, ".css")) {
+    return "text/css; charset=utf-8";
+  }
+  if (endsWith(path, ".wasm")) {
+    return "application/wasm";
+  }
+  if (endsWith(path, ".webmanifest")) {
+    return "application/manifest+json";
+  }
+  if (endsWith(path, ".svg")) {
+    return "image/svg+xml";
+  }
+  if (endsWith(path, ".png")) {
+    return "image/png";
+  }
+  if (endsWith(path, ".json")) {
+    return "application/json";
+  }
+  return "application/octet-stream";
+}

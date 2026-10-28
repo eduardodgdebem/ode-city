@@ -1,0 +1,473 @@
+// ---------------------------------------------------------------------------
+// The game: what a session is worth, and what giving up costs.
+//
+// It keeps every session -- when it ended, how long it was, what it left --
+// and the city is grown from them. A countdown that runs its full time
+// raises a building the size of its minutes. A pomodoro cycle raises one
+// building over all its rounds, the size of all their focus time together:
+// each round puts up its share of the floors, the work stops for the breaks,
+// and the last round finishes it, with a park beside it. Giving up -- a
+// countdown, or a cycle anywhere before its end -- brings the construction
+// down, and leaves a ruin. In strict mode, leaving the app during focus for
+// longer than a short grace counts as giving up, unless the round would have
+// been over by then anyway.
+//
+// The page stores the sessions and hands them back on the next visit; this
+// module decides everything they mean.
+// ---------------------------------------------------------------------------
+
+import { List } from "std/list";
+import { alloc } from "std/mem";
+import { Event, Mode, Phase, Timer } from "./timer";
+import { Kind, addToCity, resetCity } from "./city";
+
+export struct Session {
+  // When it ended, in milliseconds since 1970.
+  time: f64,
+  minutes: i32,
+  kind: Kind,
+}
+
+// What the next session will be, as the page's controls have it set.
+export struct Plan {
+  mode: Mode,
+  // A single countdown's minutes.
+  minutes: i32,
+  // A pomodoro cycle's.
+  focus: i32,
+  shortBreak: i32,
+  longBreak: i32,
+  rounds: i32,
+}
+
+let STRICT_GRACE: f64 = 10000.0;
+let DAY: f64 = 86400000.0;
+
+let SESSIONS: *List<Session> = null;
+let TIMER: *Timer = null;
+let PLAN: *Plan = null;
+let STRICT: bool = false;
+// When the page was hidden during focus, or 0.
+let HIDDEN_AT: f64 = 0.0;
+// Set when the city has changed and its mesh must be built again.
+let CITY_CHANGED: bool = true;
+// The minutes of the session the last event was about.
+let LAST_MINUTES: i32 = 0;
+
+export fn startGame(seed: u32): void {
+  if (SESSIONS == null) {
+    SESSIONS = List<Session>.new();
+    TIMER = alloc<Timer>(1);
+    PLAN = alloc<Plan>(1);
+    *PLAN = Plan { mode: Mode.Timer, minutes: 25, focus: 25, shortBreak: 5, longBreak: 15, rounds: 4 };
+  }
+  SESSIONS.clear();
+  *TIMER = Timer.new();
+  HIDDEN_AT = 0.0;
+  CITY_CHANGED = true;
+  resetCity(seed);
+}
+
+export fn timer(): *Timer {
+  return TIMER;
+}
+
+export fn plan(): *Plan {
+  return PLAN;
+}
+
+export fn setStrict(on: bool): void {
+  STRICT = on;
+}
+
+export fn sessions(): *List<Session> {
+  return SESSIONS;
+}
+
+export fn lastMinutes(): i32 {
+  return LAST_MINUTES;
+}
+
+// True once, after the city changes.
+export fn takeCityChange(): bool {
+  let changed: bool = CITY_CHANGED;
+  CITY_CHANGED = false;
+  return changed;
+}
+
+// A session from an earlier visit, put back.
+export fn restore(time: f64, minutes: i32, kind: Kind): void {
+  SESSIONS.push(Session { time: time, minutes: minutes, kind: kind });
+  addToCity(kind, minutes);
+  CITY_CHANGED = true;
+}
+
+fn record(kind: Kind, minutes: i32, now: f64): void {
+  restore(now, minutes, kind);
+  LAST_MINUTES = minutes;
+}
+
+fn pomodoro(): bool {
+  if (TIMER.phase != Phase.Idle || TIMER.round > 0) {
+    return TIMER.mode == Mode.Pomodoro;
+  }
+  return PLAN.mode == Mode.Pomodoro;
+}
+
+// Whether a cycle has started and not ended: its building is half up, and
+// the plan cannot change under it.
+export fn cycleUnderway(): bool {
+  return TIMER.mode == Mode.Pomodoro && TIMER.round > 0;
+}
+
+// The minutes of the next focus round or countdown, or the running one's.
+export fn focusMinutes(): i32 {
+  if (TIMER.phase != Phase.Idle || cycleUnderway()) {
+    return TIMER.focusMinutes;
+  }
+  if (PLAN.mode == Mode.Pomodoro) {
+    return PLAN.focus;
+  }
+  return PLAN.minutes;
+}
+
+export fn rounds(): i32 {
+  if (TIMER.phase != Phase.Idle || cycleUnderway()) {
+    return TIMER.rounds;
+  }
+  return PLAN.rounds;
+}
+
+// The minutes the building going up stands for: a countdown's, or a whole
+// cycle's focus time.
+export fn buildMinutes(): i32 {
+  if (pomodoro()) {
+    return focusMinutes() * rounds();
+  }
+  return focusMinutes();
+}
+
+// Whether there is a building going up: during focus, and in a cycle's
+// breaks, while the crane waits.
+export fn underConstruction(): bool {
+  return TIMER.phase == Phase.Focus || cycleUnderway();
+}
+
+// How much of the building is up, from 0 to 1.
+export fn buildProgress(now: f64): f64 {
+  if (!underConstruction()) {
+    return 0.0;
+  }
+  if (TIMER.mode == Mode.Timer) {
+    return TIMER.progress(now);
+  }
+  let done: f64 = TIMER.round as f64;
+  if (TIMER.phase == Phase.Focus) {
+    done += TIMER.progress(now);
+  }
+  return done / TIMER.rounds as f64;
+}
+
+// What is on the clock: the phase's time left, or the next session's whole.
+export fn clockRemaining(now: f64): f64 {
+  if (TIMER.phase == Phase.Idle) {
+    return focusMinutes() as f64 * 60000.0;
+  }
+  return TIMER.remaining(now);
+}
+
+// Starts a countdown, or a cycle's next focus round. A cycle keeps the plan
+// it started with until it ends.
+export fn start(now: f64): void {
+  if (TIMER.mode != PLAN.mode) {
+    TIMER.round = 0;
+  }
+  if (!cycleUnderway()) {
+    TIMER.mode = PLAN.mode;
+    TIMER.focusMinutes = focusMinutes();
+    TIMER.shortMinutes = PLAN.shortBreak;
+    TIMER.longMinutes = PLAN.longBreak;
+    TIMER.rounds = PLAN.rounds;
+    TIMER.round = 0;
+  }
+  TIMER.startFocus(now);
+  HIDDEN_AT = 0.0;
+}
+
+// Moves the timer on by at most one phase, and records what that earned.
+// The page calls it until it says nothing happened.
+export fn tick(now: f64): Event {
+  let event: Event = TIMER.tick(now);
+  match (event) {
+    .FocusDone => record(Kind.Building, TIMER.focusMinutes, now),
+    .CycleDone => {
+      record(Kind.Building, TIMER.focusMinutes * TIMER.rounds, now);
+      SESSIONS.push(Session { time: now, minutes: 0, kind: Kind.Park });
+      addToCity(Kind.Park, 0);
+    }
+    else => {}
+  }
+  return event;
+}
+
+// Stops whatever runs. True when that brought a construction down: a
+// countdown, or a cycle in a focus round. A break given up is only skipped.
+export fn giveUp(now: f64): bool {
+  HIDDEN_AT = 0.0;
+  let minutes: i32 = buildMinutes();
+  let cycle: bool = TIMER.mode == Mode.Pomodoro;
+  if (TIMER.giveUp()) {
+    if (cycle) {
+      TIMER.round = 0;
+    }
+    record(Kind.Ruin, minutes, now);
+    return true;
+  }
+  return false;
+}
+
+// Abandons a cycle between rounds. True when it had a building half up,
+// now a ruin.
+export fn resetCycle(now: f64): bool {
+  let minutes: i32 = buildMinutes();
+  let started: bool = cycleUnderway();
+  TIMER.giveUp();
+  TIMER.round = 0;
+  if (started) {
+    record(Kind.Ruin, minutes, now);
+  }
+  return started;
+}
+
+// ---------------------------------------------------------------------------
+// Strict mode
+// ---------------------------------------------------------------------------
+
+export fn hidden(now: f64): void {
+  if (TIMER.phase == Phase.Focus) {
+    HIDDEN_AT = now;
+  }
+}
+
+export fn hiddenAt(): f64 {
+  return HIDDEN_AT;
+}
+
+// For a page closed while hidden, which comes back as a new page.
+export fn setHiddenAt(at: f64): void {
+  HIDDEN_AT = at;
+}
+
+// The page is back. True when strict mode brought the construction down.
+export fn returned(now: f64): bool {
+  let away: f64 = HIDDEN_AT;
+  HIDDEN_AT = 0.0;
+  if (away == 0.0 || !STRICT || TIMER.phase != Phase.Focus) {
+    return false;
+  }
+  let endsAt: f64 = TIMER.startedAt + TIMER.duration;
+  if (now - away > STRICT_GRACE && endsAt > away + STRICT_GRACE) {
+    return giveUp(now);
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Stats. `offset` is the viewer's distance from UTC in minutes, as
+// JavaScript's getTimezoneOffset gives it -- positive west of Greenwich.
+// ---------------------------------------------------------------------------
+
+fn dayOf(time: f64, offset: i32): i64 {
+  return ((time - offset as f64 * 60000.0) / DAY) as i64;
+}
+
+export fn buildingCount(): i32 {
+  let count: i32 = 0;
+  for (i in 0..SESSIONS.count) {
+    if (SESSIONS.at(i).kind == Kind.Building) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+export fn minutesToday(now: f64, offset: i32): i32 {
+  let today: i64 = dayOf(now, offset);
+  let total: i32 = 0;
+  for (i in 0..SESSIONS.count) {
+    let session: Session = SESSIONS.at(i);
+    if (session.kind == Kind.Building && dayOf(session.time, offset) == today) {
+      total += session.minutes;
+    }
+  }
+  return total;
+}
+
+fn builtOn(day: i64, offset: i32): bool {
+  for (i in 0..SESSIONS.count) {
+    let session: Session = SESSIONS.at(i);
+    if (session.kind == Kind.Building && dayOf(session.time, offset) == day) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Days in a row with a building finished, up to today -- or up to
+// yesterday, so a streak is not lost before today's first session.
+export fn streak(now: f64, offset: i32): i32 {
+  let day: i64 = dayOf(now, offset);
+  if (!builtOn(day, offset)) {
+    day -= 1;
+  }
+  let count: i32 = 0;
+  while (builtOn(day, offset)) {
+    count += 1;
+    day -= 1;
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------------------
+
+let MINUTE: f64 = 60000.0;
+
+test "a finished session raises a building" {
+  startGame(1);
+  PLAN.minutes = 30;
+  start(0.0);
+  assertEq(tick(30.0 * MINUTE), Event.FocusDone);
+  assertEq(buildingCount(), 1);
+  assertEq(lastMinutes(), 30);
+  assert(takeCityChange(), "the city changed");
+  assert(!takeCityChange(), "a change is taken once");
+}
+
+test "a pomodoro cycle raises one building for all its focus time" {
+  startGame(2);
+  PLAN.mode = Mode.Pomodoro;
+  PLAN.focus = 25;
+  PLAN.shortBreak = 5;
+  PLAN.rounds = 4;
+  assertEq(buildMinutes(), 100);
+  start(0.0);
+  assertEq(tick(25.0 * MINUTE), Event.RoundDone);
+  assertEq(SESSIONS.count, 0);
+  assert(underConstruction(), "the crane waits through the break");
+  assertEq(buildProgress(26.0 * MINUTE), 0.25);
+  assertEq(tick(30.0 * MINUTE), Event.BreakDone);
+  assertEq(buildProgress(31.0 * MINUTE), 0.25);
+
+  // Changing the plan mid-cycle does not change the building.
+  PLAN.focus = 50;
+  assertEq(buildMinutes(), 100);
+  for (round in 1..4) {
+    let at: f64 = (round as f64) * 40.0 * MINUTE;
+    start(at);
+    assertEq(buildProgress(at + 12.5 * MINUTE), (round as f64 + 0.5) / 4.0);
+    let event: Event = tick(at + 25.0 * MINUTE);
+    if (round < 3) {
+      assertEq(event, Event.RoundDone);
+      tick(at + 30.0 * MINUTE);
+    } else {
+      assertEq(event, Event.CycleDone);
+    }
+  }
+  assertEq(SESSIONS.count, 2);
+  assertEq(SESSIONS.at(0).minutes, 100);
+  assertEq(SESSIONS.at(1).kind, Kind.Park);
+  assertEq(lastMinutes(), 100);
+  assert(!underConstruction(), "finished");
+}
+
+test "giving up a cycle brings the whole construction down" {
+  startGame(8);
+  PLAN.mode = Mode.Pomodoro;
+  PLAN.focus = 25;
+  PLAN.rounds = 4;
+  start(0.0);
+  tick(25.0 * MINUTE);
+  tick(30.0 * MINUTE);
+  start(31.0 * MINUTE);
+  assert(giveUp(40.0 * MINUTE), "a focus round given up");
+  assertEq(SESSIONS.at(0).kind, Kind.Ruin);
+  assertEq(SESSIONS.at(0).minutes, 100);
+  assert(!cycleUnderway(), "the cycle is over");
+}
+
+test "skipping a break is not giving up" {
+  startGame(9);
+  PLAN.mode = Mode.Pomodoro;
+  PLAN.focus = 25;
+  start(0.0);
+  tick(25.0 * MINUTE);
+  assert(!giveUp(26.0 * MINUTE), "a break skipped");
+  assert(cycleUnderway(), "the cycle goes on");
+  assertEq(SESSIONS.count, 0);
+}
+
+test "resetting a cycle between rounds leaves a ruin" {
+  startGame(10);
+  PLAN.mode = Mode.Pomodoro;
+  PLAN.focus = 25;
+  assert(!resetCycle(0.0), "nothing to reset");
+  start(0.0);
+  tick(25.0 * MINUTE);
+  tick(30.0 * MINUTE);
+  assert(resetCycle(31.0 * MINUTE), "a half-built cycle");
+  assertEq(SESSIONS.at(0).kind, Kind.Ruin);
+}
+
+test "giving up leaves a ruin" {
+  startGame(3);
+  start(0.0);
+  assert(giveUp(MINUTE), "focus given up");
+  assertEq(SESSIONS.at(0).kind, Kind.Ruin);
+  assertEq(buildingCount(), 0);
+}
+
+test "strict mode: away too long is giving up" {
+  startGame(4);
+  setStrict(true);
+  PLAN.minutes = 30;
+  start(0.0);
+  hidden(MINUTE);
+  assert(returned(MINUTE + 5000.0) == false, "a short absence is forgiven");
+  hidden(2.0 * MINUTE);
+  assert(returned(4.0 * MINUTE), "a long absence is not");
+  assertEq(SESSIONS.at(0).kind, Kind.Ruin);
+}
+
+test "strict mode: leaving at the very end still builds" {
+  startGame(5);
+  setStrict(true);
+  PLAN.minutes = 10;
+  start(0.0);
+  hidden(10.0 * MINUTE - 3000.0);
+  assert(!returned(20.0 * MINUTE), "the session was all but over");
+  assertEq(tick(20.0 * MINUTE), Event.FocusDone);
+}
+
+test "strict mode off forgives everything" {
+  startGame(6);
+  setStrict(false);
+  start(0.0);
+  hidden(MINUTE);
+  assert(!returned(20.0 * MINUTE), "not strict");
+}
+
+test "minutes today and the streak" {
+  startGame(7);
+  let now: f64 = 20000.0 * DAY + 12.0 * 3600000.0;
+  restore(now - 3.0 * DAY, 25, Kind.Building);
+  restore(now - 2.0 * DAY, 25, Kind.Building);
+  restore(now - DAY, 25, Kind.Building);
+  restore(now - DAY, 10, Kind.Ruin);
+  assertEq(streak(now, 0), 3);
+  assertEq(minutesToday(now, 0), 0);
+  restore(now - 60000.0, 45, Kind.Building);
+  assertEq(streak(now, 0), 4);
+  assertEq(minutesToday(now, 0), 45);
+  restore(now - 5.0 * DAY, 25, Kind.Building);
+  assertEq(streak(now, 0), 4);
+}

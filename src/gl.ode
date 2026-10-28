@@ -1,0 +1,73 @@
+// ---------------------------------------------------------------------------
+// WebGL2, as imports.
+//
+// A wasm module cannot reach the browser itself, so each function here is
+// one the page hands in (web/gl.js), each a line forwarding to the WebGL2
+// call of the same name. What WebGL hands back as an object -- a shader, a
+// buffer, a texture -- comes here as a number, 0 for none, which the page
+// keeps a table of. Text, a shader's source or a uniform's name, crosses as
+// the address of a NUL-terminated string in the module's memory, and so
+// does an array of floats, by its address.
+//
+// Natively there is no WebGL, so a native build (the tests) must not call
+// any of these; src/render.ode is only reached from the wasm32 module.
+// ---------------------------------------------------------------------------
+
+export extern fn gl_create_shader(kind: i32, source: *i8): i32;
+export extern fn gl_create_program(vertex: i32, fragment: i32): i32;
+export extern fn gl_use_program(program: i32): void;
+export extern fn gl_uniform_location(program: i32, name: *i8): i32;
+export extern fn gl_uniform1f(location: i32, value: f32): void;
+export extern fn gl_uniform1i(location: i32, value: i32): void;
+export extern fn gl_uniform3fv(location: i32, values: *f32): void;
+export extern fn gl_uniform_matrix4fv(location: i32, values: *f32): void;
+
+export extern fn gl_create_vertex_array(): i32;
+export extern fn gl_bind_vertex_array(array: i32): void;
+export extern fn gl_create_buffer(): i32;
+export extern fn gl_bind_array_buffer(buffer: i32): void;
+// Fills the bound array buffer with `count` floats.
+export extern fn gl_buffer_floats(data: *f32, count: i32): void;
+// Attribute `index`: `size` floats a vertex, `offset` bytes in, `stride` apart.
+export extern fn gl_float_attribute(index: i32, size: i32, stride: i32, offset: i32): void;
+export extern fn gl_draw_triangles(first: i32, count: i32): void;
+
+export extern fn gl_create_texture(): i32;
+export extern fn gl_bind_texture(texture: i32): void;
+export extern fn gl_active_texture(unit: i32): void;
+// Storage for a square depth texture, 24 bits a texel.
+export extern fn gl_depth_storage(size: i32): void;
+export extern fn gl_texture_parameter(name: i32, value: i32): void;
+export extern fn gl_create_framebuffer(): i32;
+// 0 for the canvas.
+export extern fn gl_bind_framebuffer(framebuffer: i32): void;
+// Makes the bound framebuffer write depth into `texture`, and no colour.
+export extern fn gl_depth_attachment(texture: i32): void;
+
+export extern fn gl_viewport(x: i32, y: i32, width: i32, height: i32): void;
+export extern fn gl_clear(mask: i32): void;
+export extern fn gl_enable(capability: i32): void;
+export extern fn gl_disable(capability: i32): void;
+export extern fn gl_depth_mask(on: i32): void;
+export extern fn gl_blend_func(source: i32, destination: i32): void;
+
+// WebGL's own numbers for what is named here.
+export let VERTEX_SHADER: i32 = 35633;
+export let FRAGMENT_SHADER: i32 = 35632;
+export let DEPTH_BUFFER_BIT: i32 = 256;
+export let COLOR_BUFFER_BIT: i32 = 16384;
+export let DEPTH_TEST: i32 = 2929;
+export let BLEND: i32 = 3042;
+export let SRC_ALPHA: i32 = 770;
+export let ONE_MINUS_SRC_ALPHA: i32 = 771;
+export let TEXTURE0: i32 = 33984;
+export let TEXTURE_MAG_FILTER: i32 = 10240;
+export let TEXTURE_MIN_FILTER: i32 = 10241;
+export let TEXTURE_WRAP_S: i32 = 10242;
+export let TEXTURE_WRAP_T: i32 = 10243;
+export let LINEAR: i32 = 9729;
+export let CLAMP_TO_EDGE: i32 = 33071;
+export let TEXTURE_COMPARE_MODE: i32 = 34892;
+export let TEXTURE_COMPARE_FUNC: i32 = 34893;
+export let COMPARE_REF_TO_TEXTURE: i32 = 34894;
+export let LEQUAL: i32 = 515;

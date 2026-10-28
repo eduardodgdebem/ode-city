@@ -1,0 +1,144 @@
+// ---------------------------------------------------------------------------
+// The sky: where the sun is at an hour of the day, and what it does to the
+// light.
+//
+// The hour is the viewer's own, so the city has the morning, dusk and night
+// they do. Three palettes -- day, dusk, night -- are blended by how high the
+// sun stands; below the horizon the moon lights the city, dimmer and bluer,
+// and the windows come on.
+// ---------------------------------------------------------------------------
+
+import { PI, Vec3, clamp, cosine, power, sine } from "./math";
+
+export enum SkyMode {
+  // The hour it is where the viewer is.
+  Auto,
+  Day,
+  Night,
+}
+
+// Everything the shaders need of the light, in linear colour.
+export struct Light {
+  // What lights the city: the sun by day, the moon by night.
+  dir: Vec3,
+  // Where the sun itself is, for the sky's glow.
+  sun: Vec3,
+  color: Vec3,
+  disc: Vec3,
+  zenith: Vec3,
+  horizon: Vec3,
+  ambientSky: Vec3,
+  ambientGround: Vec3,
+  // 0 by day to 1 at night: how many windows are lit, how many stars.
+  night: f32,
+  shadow: f32,
+}
+
+struct Palette {
+  zenith: i32,
+  horizon: i32,
+  color: i32,
+  intensity: f32,
+  sky: i32,
+  ground: i32,
+}
+
+fn day(): Palette {
+  return Palette { zenith: 0x4f8fd6, horizon: 0xcfe3f1, color: 0xfff4e0, intensity: 2.3, sky: 0x9cb9db, ground: 0x8f8a72 };
+}
+
+fn dusk(): Palette {
+  return Palette { zenith: 0x34457a, horizon: 0xf2a477, color: 0xffb07a, intensity: 1.6, sky: 0x7d7fa8, ground: 0x7a5f55 };
+}
+
+fn night(): Palette {
+  return Palette { zenith: 0x070b1f, horizon: 0x1b2647, color: 0x9fb4ff, intensity: 0.32, sky: 0x26365e, ground: 0x1a1e2c };
+}
+
+// From 0xrrggbb in sRGB to linear.
+fn linear(hex: i32): Vec3 {
+  return Vec3 {
+    x: power(((hex >> 16) & 255) as f32 / 255.0, 2.2),
+    y: power(((hex >> 8) & 255) as f32 / 255.0, 2.2),
+    z: power((hex & 255) as f32 / 255.0, 2.2),
+  };
+}
+
+fn blend(a: i32, b: i32, t: f32): Vec3 {
+  return linear(a).lerp(linear(b), t);
+}
+
+// `hours` from 0 to 24, local time.
+export fn lightAt(localHours: f32, mode: SkyMode): Light {
+  let hours: f32 = match (mode) {
+    .Auto => localHours,
+    .Day => 14.5,
+    .Night => 22.5,
+  };
+  let angle: f32 = (hours - 6.0) / 12.0 * PI;
+  let elevation: f32 = sine(angle);
+  let sun: Vec3 = Vec3.new(cosine(angle) * 0.8, elevation, 0.45).normalized();
+
+  let a: Palette = day();
+  let b: Palette = day();
+  let t: f32 = 0.0;
+  if (elevation > 0.25) {
+    t = 0.0;
+  } else if (elevation > -0.05) {
+    a = dusk();
+    t = (elevation + 0.05) / 0.3;
+  } else if (elevation > -0.25) {
+    a = night();
+    b = dusk();
+    t = (elevation + 0.25) / 0.2;
+  } else {
+    a = night();
+    b = night();
+  }
+
+  let intensity: f32 = a.intensity + (b.intensity - a.intensity) * t;
+  let color: Vec3 = blend(a.color, b.color, t);
+  let lit: bool = elevation > 0.06;
+  let dir: Vec3 = sun;
+  let shadow: f32 = 0.9;
+  if (!lit) {
+    dir = Vec3.new(-0.45, 0.75, -0.5).normalized();
+    shadow = 0.55;
+  }
+  let disc: f32 = 1.0;
+  if (elevation <= -0.05) {
+    disc = 0.2;
+  }
+  return Light {
+    dir: dir,
+    sun: sun,
+    color: color.scale(intensity),
+    disc: color.scale(disc),
+    zenith: blend(a.zenith, b.zenith, t),
+    horizon: blend(a.horizon, b.horizon, t),
+    ambientSky: blend(a.sky, b.sky, t).scale(0.55),
+    ambientGround: blend(a.ground, b.ground, t).scale(0.45),
+    night: clamp(1.0 - (elevation + 0.12) / 0.3, 0.0, 1.0),
+    shadow: shadow,
+  };
+}
+
+test "noon is day, midnight is night" {
+  let noon: Light = lightAt(12.0, SkyMode.Auto);
+  assert(noon.sun.y > 0.9, "the sun is high at noon");
+  assertEq(noon.night, 0.0);
+  let midnight: Light = lightAt(0.0, SkyMode.Auto);
+  assertEq(midnight.night, 1.0);
+  assert(midnight.dir.y > 0.0, "the moon lights from above");
+}
+
+test "dusk is warmer than day" {
+  let evening: Light = lightAt(18.2, SkyMode.Auto);
+  let afternoon: Light = lightAt(14.0, SkyMode.Auto);
+  assert(evening.horizon.x / evening.horizon.z > afternoon.horizon.x / afternoon.horizon.z, "dusk is not warmer");
+}
+
+test "a fixed sky ignores the hour" {
+  let forced: Light = lightAt(3.0, SkyMode.Day);
+  assertEq(forced.night, 0.0);
+}

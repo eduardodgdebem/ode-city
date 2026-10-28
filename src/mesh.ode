@@ -1,0 +1,183 @@
+// ---------------------------------------------------------------------------
+// Meshes: triangles the page hands straight to WebGL.
+//
+// A vertex is ten f32s -- position, normal, colour, material -- in a buffer
+// the page reads out of the module's memory, so nothing is copied on the way
+// to the GPU but the upload itself. Triangles are not indexed, and a box has
+// no bottom: nothing in the city is seen from below.
+// ---------------------------------------------------------------------------
+
+import { alloc, grow } from "std/mem";
+import { Vec3 } from "./math";
+
+export let FLOATS_PER_VERTEX: i64 = 10;
+
+// What the shader paints a surface as. It is handed the number, in a
+// vertex's tenth float, so the order here is the order web/render.js reads.
+export enum Material {
+  Plain,
+  // A wall with a grid of windows, one row a floor.
+  Wall,
+  // A curtain wall of glass, for towers.
+  Glass,
+  Grass,
+  Road,
+  Leaf,
+  Water,
+  // What is still to be built: drawn see-through, after everything else.
+  Ghost,
+}
+
+export struct Color {
+  r: f32,
+  g: f32,
+  b: f32,
+
+  // From 0xrrggbb.
+  fn hex(value: i32): Color {
+    return Color {
+      r: ((value >> 16) & 255) as f32 / 255.0,
+      g: ((value >> 8) & 255) as f32 / 255.0,
+      b: (value & 255) as f32 / 255.0,
+    };
+  }
+
+  fn scale(self: Color, by: f32): Color {
+    return Color { r: self.r * by, g: self.g * by, b: self.b * by };
+  }
+}
+
+export struct Mesh {
+  data: *f32,
+  // Floats written, and room for.
+  count: i64,
+  capacity: i64,
+
+  fn new(): *Mesh {
+    let mesh: *Mesh = alloc<Mesh>(1);
+    mesh.capacity = 4096;
+    mesh.data = alloc<f32>(mesh.capacity);
+    mesh.count = 0;
+    return mesh;
+  }
+
+  fn clear(self: *Mesh): void {
+    self.count = 0;
+  }
+
+  fn vertices(self: *Mesh): i32 {
+    return (self.count / FLOATS_PER_VERTEX) as i32;
+  }
+
+  fn reserve(self: *Mesh, floats: i64): void {
+    if (self.count + floats <= self.capacity) {
+      return;
+    }
+    let next: i64 = self.capacity * 2;
+    while (next < self.count + floats) {
+      next = next * 2;
+    }
+    self.data = grow<f32>(self.data, next);
+    self.capacity = next;
+  }
+
+  fn vertex(self: *Mesh, p: Vec3, n: Vec3, c: Color, m: Material): void {
+    self.reserve(FLOATS_PER_VERTEX);
+    let at: i64 = self.count;
+    self.data[at] = p.x;
+    self.data[at + 1] = p.y;
+    self.data[at + 2] = p.z;
+    self.data[at + 3] = n.x;
+    self.data[at + 4] = n.y;
+    self.data[at + 5] = n.z;
+    self.data[at + 6] = c.r;
+    self.data[at + 7] = c.g;
+    self.data[at + 8] = c.b;
+    self.data[at + 9] = m as i32 as f32;
+    self.count = at + FLOATS_PER_VERTEX;
+  }
+
+  fn triangle(self: *Mesh, a: Vec3, b: Vec3, c: Vec3, n: Vec3, color: Color, m: Material): void {
+    self.vertex(a, n, color, m);
+    self.vertex(b, n, color, m);
+    self.vertex(c, n, color, m);
+  }
+
+  fn quad(self: *Mesh, a: Vec3, b: Vec3, c: Vec3, d: Vec3, n: Vec3, color: Color, m: Material): void {
+    self.triangle(a, b, c, n, color, m);
+    self.triangle(a, c, d, n, color, m);
+  }
+
+  // An axis-aligned box from one corner to the other: its top and four sides.
+  fn box(self: *Mesh, x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32, c: Color, m: Material): void {
+    self.quad(Vec3.new(x0, y1, z0), Vec3.new(x1, y1, z0), Vec3.new(x1, y1, z1), Vec3.new(x0, y1, z1),
+        Vec3.new(0.0, 1.0, 0.0), c, m);
+    self.quad(Vec3.new(x0, y0, z1), Vec3.new(x1, y0, z1), Vec3.new(x1, y1, z1), Vec3.new(x0, y1, z1),
+        Vec3.new(0.0, 0.0, 1.0), c, m);
+    self.quad(Vec3.new(x1, y0, z0), Vec3.new(x0, y0, z0), Vec3.new(x0, y1, z0), Vec3.new(x1, y1, z0),
+        Vec3.new(0.0, 0.0, -1.0), c, m);
+    self.quad(Vec3.new(x1, y0, z1), Vec3.new(x1, y0, z0), Vec3.new(x1, y1, z0), Vec3.new(x1, y1, z1),
+        Vec3.new(1.0, 0.0, 0.0), c, m);
+    self.quad(Vec3.new(x0, y0, z0), Vec3.new(x0, y0, z1), Vec3.new(x0, y1, z1), Vec3.new(x0, y1, z0),
+        Vec3.new(-1.0, 0.0, 0.0), c, m);
+  }
+
+  // A pitched roof over the rectangle, rising `height` from `y`, its ridge
+  // running along x or along z.
+  fn gable(self: *Mesh, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, height: f32, alongX: bool, c: Color, m: Material): void {
+    let top: f32 = y + height;
+    if (alongX) {
+      let mid: f32 = (z0 + z1) * 0.5;
+      let half: f32 = (z1 - z0) * 0.5;
+      self.quad(Vec3.new(x0, y, z0), Vec3.new(x1, y, z0), Vec3.new(x1, top, mid), Vec3.new(x0, top, mid),
+          Vec3.new(0.0, half, 0.0 - height).normalized(), c, m);
+      self.quad(Vec3.new(x1, y, z1), Vec3.new(x0, y, z1), Vec3.new(x0, top, mid), Vec3.new(x1, top, mid),
+          Vec3.new(0.0, half, height).normalized(), c, m);
+      self.triangle(Vec3.new(x0, y, z1), Vec3.new(x0, y, z0), Vec3.new(x0, top, mid), Vec3.new(-1.0, 0.0, 0.0), c, m);
+      self.triangle(Vec3.new(x1, y, z0), Vec3.new(x1, y, z1), Vec3.new(x1, top, mid), Vec3.new(1.0, 0.0, 0.0), c, m);
+      return;
+    }
+    let mid: f32 = (x0 + x1) * 0.5;
+    let half: f32 = (x1 - x0) * 0.5;
+    self.quad(Vec3.new(x0, y, z1), Vec3.new(x0, y, z0), Vec3.new(mid, top, z0), Vec3.new(mid, top, z1),
+        Vec3.new(0.0 - height, half, 0.0).normalized(), c, m);
+    self.quad(Vec3.new(x1, y, z0), Vec3.new(x1, y, z1), Vec3.new(mid, top, z1), Vec3.new(mid, top, z0),
+        Vec3.new(height, half, 0.0).normalized(), c, m);
+    self.triangle(Vec3.new(x0, y, z0), Vec3.new(x1, y, z0), Vec3.new(mid, top, z0), Vec3.new(0.0, 0.0, -1.0), c, m);
+    self.triangle(Vec3.new(x1, y, z1), Vec3.new(x0, y, z1), Vec3.new(mid, top, z1), Vec3.new(0.0, 0.0, 1.0), c, m);
+  }
+
+  // A four-sided pyramid on a square, for spires, hip roofs and fir trees.
+  fn pyramid(self: *Mesh, cx: f32, cz: f32, half: f32, y: f32, height: f32, c: Color, m: Material): void {
+    let apex: Vec3 = Vec3.new(cx, y + height, cz);
+    let a: Vec3 = Vec3.new(cx - half, y, cz - half);
+    let b: Vec3 = Vec3.new(cx + half, y, cz - half);
+    let d: Vec3 = Vec3.new(cx + half, y, cz + half);
+    let e: Vec3 = Vec3.new(cx - half, y, cz + half);
+    self.triangle(a, b, apex, Vec3.new(0.0, half, 0.0 - height).normalized(), c, m);
+    self.triangle(b, d, apex, Vec3.new(height, half, 0.0).normalized(), c, m);
+    self.triangle(d, e, apex, Vec3.new(0.0, half, height).normalized(), c, m);
+    self.triangle(e, a, apex, Vec3.new(0.0 - height, half, 0.0).normalized(), c, m);
+  }
+}
+
+test "a box is five faces of two triangles" {
+  let mesh: *Mesh = Mesh.new();
+  mesh.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, Color.hex(0xffffff), Material.Plain);
+  assertEq(mesh.vertices(), 30);
+}
+
+test "a mesh grows past its first buffer" {
+  let mesh: *Mesh = Mesh.new();
+  for (i in 0..100) {
+    mesh.box(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, Color.hex(0x808080), Material.Wall);
+  }
+  assertEq(mesh.vertices(), 3000);
+  assert(mesh.data[29999] == 1.0, "the last vertex keeps its material");
+}
+
+test "colours from hex" {
+  let c: Color = Color.hex(0xff8000);
+  assertEq(c.r, 1.0);
+  assertEq(c.b, 0.0);
+}

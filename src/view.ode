@@ -1,0 +1,182 @@
+// ---------------------------------------------------------------------------
+// The view: the camera orbiting the city, and every number a frame's draw
+// needs, written into one block the page hands to the shaders.
+//
+// The camera circles a target. Dragging turns it, pinching moves it in and
+// out, and left alone it turns slowly. Where it looks follows the game --
+// the whole city while idle, the building site during focus -- easing there
+// rather than jumping.
+// ---------------------------------------------------------------------------
+
+import { alloc } from "std/mem";
+import {
+  Vec3, clamp, cosine, exponent, larger, lookAt, multiply, invert, ortho, perspective, power, sine, smaller, absolute,
+} from "./math";
+import { Light } from "./sky";
+
+// Where each value sits in the frame block, in floats. web/render.js reads
+// them at the same offsets.
+export let VIEW_PROJ: i32 = 0;
+export let LIGHT_VIEW_PROJ: i32 = 16;
+export let INVERSE_VIEW_PROJ: i32 = 32;
+export let EYE: i32 = 48;
+export let LIGHT_DIR: i32 = 51;
+export let LIGHT_COLOR: i32 = 54;
+export let SUN_DIR: i32 = 57;
+export let SUN_DISC: i32 = 60;
+export let ZENITH: i32 = 63;
+export let HORIZON: i32 = 66;
+export let AMBIENT_SKY: i32 = 69;
+export let AMBIENT_GROUND: i32 = 72;
+export let NIGHT: i32 = 75;
+export let SHADOW: i32 = 76;
+export let FOG_NEAR: i32 = 77;
+export let FOG_FAR: i32 = 78;
+export let FRAME_FLOATS: i32 = 80;
+
+// How long the camera waits after a touch before turning on its own.
+let IDLE_MS: f64 = 4000.0;
+
+export struct Camera {
+  yaw: f32,
+  pitch: f32,
+  distance: f32,
+  distanceGoal: f32,
+  target: Vec3,
+  goal: Vec3,
+  lastInput: f64,
+
+  fn new(): Camera {
+    return Camera {
+      yaw: 0.7,
+      pitch: 0.62,
+      distance: 40.0,
+      distanceGoal: 40.0,
+      target: Vec3.new(0.0, 0.0, 0.0),
+      goal: Vec3.new(0.0, 0.0, 0.0),
+      lastInput: 0.0,
+    };
+  }
+
+  // A drag of so many pixels.
+  fn drag(self: *Camera, dx: f32, dy: f32, now: f64): void {
+    self.yaw -= dx * 0.006;
+    self.pitch = clamp(self.pitch + dy * 0.004, 0.18, 1.35);
+    self.lastInput = now;
+  }
+
+  // Further away by `by`: above 1 out, below 1 in.
+  fn zoom(self: *Camera, by: f32, now: f64): void {
+    self.distanceGoal = clamp(self.distanceGoal * by, 8.0, 320.0);
+    self.lastInput = now;
+  }
+
+  // Takes in a city of `radius`, or the site, while one is being built. A
+  // portrait screen sees less across than up, so it stands further back.
+  fn aim(self: *Camera, radius: f32, aspect: f32, building: bool, site: Vec3, siteTop: f32): void {
+    let portrait: f32 = power(larger(1.0, 0.85 / aspect), 0.6);
+    self.distanceGoal = clamp((radius * 2.1 + 14.0) * portrait, 26.0, 300.0);
+    self.goal = Vec3.new(0.0, 0.0, 0.0);
+    if (building) {
+      self.goal = Vec3.new(site.x * 0.6, smaller(siteTop * 0.35, 6.0), site.z * 0.6);
+      self.distanceGoal = larger(self.distanceGoal * 0.8, siteTop * 1.6 + 18.0);
+    }
+  }
+
+  fn update(self: *Camera, dt: f32, now: f64): void {
+    if (now - self.lastInput > IDLE_MS) {
+      self.yaw += dt * 0.035;
+    }
+    let ease: f32 = 1.0 - exponent(0.0 - dt * 2.2);
+    self.distance += (self.distanceGoal - self.distance) * ease;
+    self.target = self.target.lerp(self.goal, ease);
+  }
+
+  fn eye(self: Camera): Vec3 {
+    let flat: f32 = cosine(self.pitch) * self.distance;
+    return self.target.add(Vec3.new(flat * sine(self.yaw), sine(self.pitch) * self.distance, flat * cosine(self.yaw)));
+  }
+}
+
+let VIEW: *f32 = null;
+let PROJECTION: *f32 = null;
+let LIGHT_VIEW: *f32 = null;
+let LIGHT_PROJECTION: *f32 = null;
+
+// Writes the frame block: the camera's matrices, the light's, and the
+// colours the sky and the city are lit with.
+export fn writeFrame(out: *f32, camera: Camera, light: Light, aspect: f32, radius: f32): void {
+  if (VIEW == null) {
+    VIEW = alloc<f32>(16);
+    PROJECTION = alloc<f32>(16);
+    LIGHT_VIEW = alloc<f32>(16);
+    LIGHT_PROJECTION = alloc<f32>(16);
+  }
+  let eye: Vec3 = camera.eye();
+  lookAt(VIEW, eye, camera.target, Vec3.new(0.0, 1.0, 0.0));
+  perspective(PROJECTION, 0.75, aspect, 0.5, 1400.0);
+  multiply(out + VIEW_PROJ, PROJECTION, VIEW);
+  invert(out + INVERSE_VIEW_PROJ, out + VIEW_PROJ);
+
+  // The shadow map covers the city, seen from the light.
+  let reach: f32 = radius + 14.0;
+  let lightEye: Vec3 = light.dir.scale(reach * 2.0 + 80.0);
+  let up: Vec3 = Vec3.new(0.0, 1.0, 0.0);
+  if (absolute(light.dir.y) > 0.99) {
+    up = Vec3.new(0.0, 0.0, 1.0);
+  }
+  lookAt(LIGHT_VIEW, lightEye, Vec3.new(0.0, 0.0, 0.0), up);
+  ortho(LIGHT_PROJECTION, 0.0 - reach, reach, 0.0 - reach, reach, 1.0, reach * 4.0 + 200.0);
+  multiply(out + LIGHT_VIEW_PROJ, LIGHT_PROJECTION, LIGHT_VIEW);
+
+  eye.write(out + EYE);
+  light.dir.write(out + LIGHT_DIR);
+  light.color.write(out + LIGHT_COLOR);
+  light.sun.write(out + SUN_DIR);
+  light.disc.write(out + SUN_DISC);
+  light.zenith.write(out + ZENITH);
+  light.horizon.write(out + HORIZON);
+  light.ambientSky.write(out + AMBIENT_SKY);
+  light.ambientGround.write(out + AMBIENT_GROUND);
+  out[NIGHT] = light.night;
+  out[SHADOW] = light.shadow;
+  out[FOG_NEAR] = camera.distance * 1.1;
+  out[FOG_FAR] = camera.distance * 1.1 + 260.0;
+}
+
+test "the camera eases toward its goal" {
+  let camera: Camera = Camera.new();
+  camera.goal = Vec3.new(10.0, 0.0, 0.0);
+  camera.distanceGoal = 100.0;
+  for (i in 0..120) {
+    camera.update(0.05, 0.0);
+  }
+  assert(camera.target.x > 9.9, "the target did not arrive");
+  assert(camera.distance > 99.0, "the distance did not arrive");
+}
+
+test "the camera turns on its own only when left alone" {
+  let camera: Camera = Camera.new();
+  camera.drag(10.0, 0.0, 1000.0);
+  let yaw: f32 = camera.yaw;
+  camera.update(0.1, 2000.0);
+  assertEq(camera.yaw, yaw);
+  camera.update(0.1, 9000.0);
+  assert(camera.yaw > yaw, "idle camera did not turn");
+}
+
+test "pitch stays between the street and straight down" {
+  let camera: Camera = Camera.new();
+  camera.drag(0.0, 100000.0, 0.0);
+  assertEq(camera.pitch, 1.35);
+  camera.drag(0.0, -100000.0, 0.0);
+  assertEq(camera.pitch, 0.18);
+}
+
+test "a portrait screen stands further back" {
+  let wide: Camera = Camera.new();
+  let tall: Camera = Camera.new();
+  wide.aim(40.0, 1.6, false, Vec3.new(0.0, 0.0, 0.0), 0.0);
+  tall.aim(40.0, 0.5, false, Vec3.new(0.0, 0.0, 0.0), 0.0);
+  assert(tall.distanceGoal > wide.distanceGoal, "portrait is not further back");
+}

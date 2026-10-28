@@ -1,0 +1,210 @@
+// ---------------------------------------------------------------------------
+// The timer: a single focus countdown, or a pomodoro cycle of focus sessions
+// and the breaks between them.
+//
+// It keeps when its phase started rather than counting ticks, so time goes
+// on passing while the page sleeps -- as iOS puts a page in the background to
+// sleep -- and the ticks after it wakes catch up on every phase that ended
+// meanwhile, one phase a tick.
+// ---------------------------------------------------------------------------
+
+export enum Mode {
+  Timer,
+  Pomodoro,
+}
+
+export enum Phase {
+  Idle,
+  Focus,
+  ShortBreak,
+  LongBreak,
+}
+
+// What a tick found had happened. The page is handed the number.
+export enum Event {
+  None,
+  // A single countdown ran its full time.
+  FocusDone,
+  // The last focus round of a pomodoro cycle did: the cycle is complete.
+  CycleDone,
+  BreakDone,
+  // A pomodoro focus round that is not the cycle's last did.
+  RoundDone,
+}
+
+let MINUTE: f64 = 60000.0;
+
+export struct Timer {
+  mode: Mode,
+  phase: Phase,
+  // When the phase started, and how long it lasts, in milliseconds.
+  startedAt: f64,
+  duration: f64,
+  focusMinutes: i32,
+  shortMinutes: i32,
+  longMinutes: i32,
+  // Focus sessions in a pomodoro cycle, and how many of this one are done.
+  rounds: i32,
+  round: i32,
+
+  fn new(): Timer {
+    return Timer {
+      mode: Mode.Timer,
+      phase: Phase.Idle,
+      startedAt: 0.0,
+      duration: 0.0,
+      focusMinutes: 25,
+      shortMinutes: 5,
+      longMinutes: 15,
+      rounds: 4,
+      round: 0,
+    };
+  }
+
+  fn begin(self: *Timer, phase: Phase, at: f64, minutes: i32): void {
+    self.phase = phase;
+    self.startedAt = at;
+    self.duration = minutes as f64 * MINUTE;
+  }
+
+  fn startFocus(self: *Timer, now: f64): void {
+    self.begin(Phase.Focus, now, self.focusMinutes);
+  }
+
+  fn isBreak(self: Timer): bool {
+    return self.phase == Phase.ShortBreak || self.phase == Phase.LongBreak;
+  }
+
+  // What is left of the phase; for an idle timer, the whole of the next
+  // focus session.
+  fn remaining(self: Timer, now: f64): f64 {
+    if (self.phase == Phase.Idle) {
+      return self.focusMinutes as f64 * MINUTE;
+    }
+    let left: f64 = self.startedAt + self.duration - now;
+    if (left < 0.0) {
+      return 0.0;
+    }
+    return left;
+  }
+
+  // How far through the phase, from 0 to 1.
+  fn progress(self: Timer, now: f64): f64 {
+    if (self.phase == Phase.Idle) {
+      return 0.0;
+    }
+    if (self.duration <= 0.0) {
+      return 1.0;
+    }
+    let done: f64 = (now - self.startedAt) / self.duration;
+    if (done < 0.0) {
+      return 0.0;
+    }
+    if (done > 1.0) {
+      return 1.0;
+    }
+    return done;
+  }
+
+  // Ends the phase if its time is up. A break starts when the focus before it
+  // ended, not when the tick noticed, so a page that slept through both
+  // finds the break over too.
+  fn tick(self: *Timer, now: f64): Event {
+    if (self.phase == Phase.Idle) {
+      return Event.None;
+    }
+    let endsAt: f64 = self.startedAt + self.duration;
+    if (now < endsAt) {
+      return Event.None;
+    }
+    if (self.phase != Phase.Focus) {
+      self.phase = Phase.Idle;
+      return Event.BreakDone;
+    }
+    if (self.mode == Mode.Timer) {
+      self.phase = Phase.Idle;
+      return Event.FocusDone;
+    }
+    self.round += 1;
+    if (self.round >= self.rounds) {
+      self.round = 0;
+      self.begin(Phase.LongBreak, endsAt, self.longMinutes);
+      return Event.CycleDone;
+    }
+    self.begin(Phase.ShortBreak, endsAt, self.shortMinutes);
+    return Event.RoundDone;
+  }
+
+  // Stops whatever is running. True when it was a focus session, which the
+  // city remembers as a ruin.
+  fn giveUp(self: *Timer): bool {
+    let wasFocus: bool = self.phase == Phase.Focus;
+    self.phase = Phase.Idle;
+    return wasFocus;
+  }
+}
+
+fn pomodoro(): Timer {
+  let timer: Timer = Timer.new();
+  timer.mode = Mode.Pomodoro;
+  return timer;
+}
+
+test "a focus session ends after its minutes" {
+  let timer: Timer = Timer.new();
+  timer.focusMinutes = 10;
+  timer.startFocus(1000.0);
+  assertEq(timer.tick(1000.0 + 599999.0), Event.None);
+  assertEq(timer.tick(1000.0 + 600000.0), Event.FocusDone);
+  assertEq(timer.phase, Phase.Idle);
+}
+
+test "progress and what remains" {
+  let timer: Timer = Timer.new();
+  timer.focusMinutes = 10;
+  timer.startFocus(0.0);
+  assertEq(timer.progress(300000.0), 0.5);
+  assertEq(timer.remaining(300000.0), 300000.0);
+  assertEq(timer.remaining(900000.0), 0.0);
+  assertEq(timer.progress(900000.0), 1.0);
+}
+
+test "a pomodoro cycle: focus, short breaks, then a long one" {
+  let timer: Timer = pomodoro();
+  timer.focusMinutes = 1;
+  timer.shortMinutes = 1;
+  timer.longMinutes = 2;
+  timer.rounds = 2;
+  timer.startFocus(0.0);
+  assertEq(timer.tick(60000.0), Event.RoundDone);
+  assertEq(timer.phase, Phase.ShortBreak);
+  assertEq(timer.tick(120000.0), Event.BreakDone);
+  assertEq(timer.phase, Phase.Idle);
+  assertEq(timer.round, 1);
+  timer.startFocus(200000.0);
+  assertEq(timer.tick(260000.0), Event.CycleDone);
+  assertEq(timer.phase, Phase.LongBreak);
+  assertEq(timer.round, 0);
+  assertEq(timer.tick(379999.0), Event.None);
+  assertEq(timer.tick(380000.0), Event.BreakDone);
+}
+
+test "a page that slept catches up a phase a tick" {
+  let timer: Timer = pomodoro();
+  timer.focusMinutes = 25;
+  timer.shortMinutes = 5;
+  timer.startFocus(0.0);
+  let later: f64 = 3600000.0;
+  assertEq(timer.tick(later), Event.RoundDone);
+  assertEq(timer.startedAt, 1500000.0);
+  assertEq(timer.tick(later), Event.BreakDone);
+  assertEq(timer.tick(later), Event.None);
+}
+
+test "giving up a focus session leaves a ruin; a break does not" {
+  let timer: Timer = pomodoro();
+  timer.startFocus(0.0);
+  assert(timer.giveUp(), "focus given up");
+  timer.begin(Phase.ShortBreak, 0.0, 5);
+  assert(!timer.giveUp(), "a break is not a ruin");
+}

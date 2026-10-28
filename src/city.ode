@@ -1,0 +1,775 @@
+// ---------------------------------------------------------------------------
+// The city: a plot for every finished session, grown outward from the centre.
+//
+// The land is a grid of blocks, each four lots around its corner, with roads
+// between. Every plot within reach gets a key -- its distance from the
+// centre, jittered per block and per lot from the city's seed -- and plots
+// are filled in key order, so the city spreads in a ragged ring a block at a
+// time, as towns do, and the same seed and the same sessions always give the
+// same city.
+//
+// What stands on a plot depends on the session that built it: a short one a
+// house, a long one a tower. A session given up leaves a ruin, and a full
+// pomodoro cycle opens a park.
+//
+// Buildings are raised through `part` and `roof`, which cut them off at CLIP:
+// below it they are as built, and above it, while GHOST is set, a see-through
+// outline of what is still to come. That is all construction is -- the same
+// building, cut lower.
+// ---------------------------------------------------------------------------
+
+import { List } from "std/list";
+import { allocZeroed } from "std/mem";
+import { Color, Material, Mesh } from "./mesh";
+import { squareRoot } from "./math";
+import { Rng, hash2 } from "./rand";
+
+export enum Kind {
+  Building,
+  Ruin,
+  Park,
+}
+
+export struct Plot {
+  // The lot's centre.
+  x: f32,
+  z: f32,
+  blockX: i32,
+  blockZ: i32,
+  key: f32,
+}
+
+struct Lot {
+  kind: Kind,
+  minutes: i32,
+}
+
+// A lot's side, a road's width, and the two lots and a road from one block's
+// centre to the next. web/render.js paints road markings on the same grid.
+export let LOT: f32 = 4.0;
+export let ROAD: f32 = 2.4;
+export let PITCH: f32 = 10.4;
+// The sidewalk's top, where every building stands, and a storey's height:
+// the shader draws a row of windows a storey.
+export let CURB: f32 = 0.12;
+export let FLOOR: f32 = 0.9;
+
+// Blocks from the centre, each way, that the city may fill: 2500 plots.
+let REACH: i32 = 12;
+let SIDE: i32 = REACH * 2 + 1;
+
+let NOWHERE: f32 = 1000000.0;
+
+let SEED: u32 = 1;
+let PLOTS: *List<Plot> = null;
+let LOTS: *List<Lot> = null;
+// Per block, whether anything stands on it yet: a block gets its streets
+// with its first building.
+let ACTIVE: *bool = null;
+
+let CLIP: f32 = 1000000.0;
+let GHOST: bool = false;
+// The highest point raised since it was last reset.
+let TOP: f32 = 0.0;
+
+// What the last site was built for, for the camera and the crane.
+let SITE_X: f32 = 0.0;
+let SITE_Z: f32 = 0.0;
+let SITE_TOP: f32 = 0.0;
+
+// ---------------------------------------------------------------------------
+// The plan
+// ---------------------------------------------------------------------------
+
+export fn resetCity(seed: u32): void {
+  SEED = seed;
+  if (PLOTS == null) {
+    PLOTS = List<Plot>.new();
+    LOTS = List<Lot>.new();
+    ACTIVE = allocZeroed<bool>((SIDE * SIDE) as i64);
+  }
+  PLOTS.clear();
+  LOTS.clear();
+  for (i in 0..SIDE * SIDE) {
+    ACTIVE[i] = false;
+  }
+
+  let rng: Rng = Rng.new(seed);
+  let first: i32 = 0 - REACH;
+  let last: i32 = REACH + 1;
+  for (bz in first..last) {
+    for (bx in first..last) {
+      let cx: f32 = bx as f32 * PITCH;
+      let cz: f32 = bz as f32 * PITCH;
+      let jitter: f32 = rng.float() * PITCH * 0.75;
+      if (bx == 0 && bz == 0) {
+        jitter = 0.0;
+      }
+      let distance: f32 = squareRoot(cx * cx + cz * cz) + jitter;
+      for (corner in 0..4) {
+        let dx: f32 = LOT * 0.5;
+        let dz: f32 = LOT * 0.5;
+        if (corner % 2 == 0) {
+          dx = 0.0 - dx;
+        }
+        if (corner < 2) {
+          dz = 0.0 - dz;
+        }
+        PLOTS.push(Plot {
+          x: cx + dx,
+          z: cz + dz,
+          blockX: bx,
+          blockZ: bz,
+          key: distance + rng.float() * 2.0,
+        });
+      }
+    }
+  }
+  PLOTS.sort(byKey);
+}
+
+fn byKey(a: Plot, b: Plot): i32 {
+  if (a.key < b.key) {
+    return -1;
+  }
+  if (a.key > b.key) {
+    return 1;
+  }
+  return 0;
+}
+
+fn blockIndex(bx: i32, bz: i32): i32 {
+  return (bz + REACH) * SIDE + (bx + REACH);
+}
+
+// Puts what a session left on the next free plot. A full city keeps what it
+// has.
+export fn addToCity(kind: Kind, minutes: i32): void {
+  if (LOTS.count >= PLOTS.count) {
+    return;
+  }
+  let plot: Plot = PLOTS.at(LOTS.count);
+  LOTS.push(Lot { kind: kind, minutes: minutes });
+  ACTIVE[blockIndex(plot.blockX, plot.blockZ)] = true;
+}
+
+export fn cityCount(): i32 {
+  return LOTS.count as i32;
+}
+
+export fn cityIsFull(): bool {
+  return LOTS.count >= PLOTS.count;
+}
+
+// What a session of so many minutes builds: a house, a shop, apartments,
+// offices, or a tower.
+export fn tierOf(minutes: i32): i32 {
+  if (minutes < 20) {
+    return 0;
+  }
+  if (minutes < 40) {
+    return 1;
+  }
+  if (minutes < 60) {
+    return 2;
+  }
+  if (minutes < 90) {
+    return 3;
+  }
+  return 4;
+}
+
+export fn residentsOf(minutes: i32): i32 {
+  return match (tierOf(minutes)) {
+    0 => 4,
+    1 => 12,
+    2 => 64,
+    3 => 180,
+    else => 420,
+  };
+}
+
+export fn cityPopulation(): i32 {
+  let total: i32 = 0;
+  for (i in 0..LOTS.count) {
+    let lot: Lot = LOTS.at(i);
+    if (lot.kind == Kind.Building) {
+      total += residentsOf(lot.minutes);
+    }
+  }
+  return total;
+}
+
+// How far from the centre anything stands, for the camera to take it in.
+export fn cityRadius(): f32 {
+  let radius: f32 = PITCH;
+  for (i in 0..LOTS.count) {
+    let plot: Plot = PLOTS.at(i);
+    let distance: f32 = squareRoot(plot.x * plot.x + plot.z * plot.z) + LOT;
+    if (distance > radius) {
+      radius = distance;
+    }
+  }
+  return radius;
+}
+
+export fn siteX(): f32 {
+  return SITE_X;
+}
+
+export fn siteZ(): f32 {
+  return SITE_Z;
+}
+
+export fn siteTop(): f32 {
+  return SITE_TOP;
+}
+
+// ---------------------------------------------------------------------------
+// Meshes
+// ---------------------------------------------------------------------------
+
+// Everything finished: the ground, the streets, every plot, and the woods
+// around the edge.
+export fn buildCity(mesh: *Mesh): void {
+  mesh.clear();
+  CLIP = NOWHERE;
+  GHOST = false;
+
+  mesh.box(-400.0, -0.1, -400.0, 400.0, 0.0, 400.0, Color.hex(0x7fae5b), Material.Grass);
+  let first: i32 = 0 - REACH;
+  let last: i32 = REACH + 1;
+  for (bz in first..last) {
+    for (bx in first..last) {
+      if (ACTIVE[blockIndex(bx, bz)]) {
+        block(mesh, bx, bz);
+      }
+    }
+  }
+  for (i in 0..LOTS.count) {
+    raise(mesh, i, LOTS.at(i));
+  }
+  woods(mesh);
+}
+
+// The next plot, with what `minutes` will build on it raised `progress` of
+// the way. `working` puts up the crane and the fence; without it the site is
+// a plan, all ghost.
+export fn buildSite(mesh: *Mesh, minutes: i32, progress: f32, working: bool): void {
+  mesh.clear();
+  if (cityIsFull()) {
+    return;
+  }
+  let index: i64 = LOTS.count;
+  let plot: Plot = PLOTS.at(index);
+  let lot: Lot = Lot { kind: Kind.Building, minutes: minutes };
+
+  // A first pass, thrown away, finds how tall the building will stand.
+  CLIP = NOWHERE;
+  GHOST = false;
+  TOP = CURB;
+  raise(mesh, index, lot);
+  let top: f32 = TOP;
+  mesh.clear();
+
+  if (!ACTIVE[blockIndex(plot.blockX, plot.blockZ)]) {
+    block(mesh, plot.blockX, plot.blockZ);
+  }
+  CLIP = CURB + (top - CURB) * progress;
+  GHOST = true;
+  raise(mesh, index, lot);
+  GHOST = false;
+  if (working) {
+    fence(mesh, plot);
+    crane(mesh, plot, top, CLIP);
+  }
+  CLIP = NOWHERE;
+
+  SITE_X = plot.x;
+  SITE_Z = plot.z;
+  SITE_TOP = top;
+}
+
+// The streets around a block and the sidewalk on it.
+fn block(mesh: *Mesh, bx: i32, bz: i32): void {
+  let cx: f32 = bx as f32 * PITCH;
+  let cz: f32 = bz as f32 * PITCH;
+  let road: f32 = PITCH * 0.5;
+  mesh.box(cx - road, 0.0, cz - road, cx + road, 0.02, cz + road, Color.hex(0x3d4148), Material.Road);
+  mesh.box(cx - LOT, 0.0, cz - LOT, cx + LOT, CURB, cz + LOT, Color.hex(0xa8a59e), Material.Plain);
+}
+
+// A piece of a building: as built below CLIP, a ghost of itself above.
+fn part(mesh: *Mesh, x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32, c: Color, m: Material): void {
+  if (y1 > TOP) {
+    TOP = y1;
+  }
+  if (y1 <= CLIP) {
+    mesh.box(x0, y0, z0, x1, y1, z1, c, m);
+    return;
+  }
+  let cut: f32 = y0;
+  if (y0 < CLIP) {
+    mesh.box(x0, y0, z0, x1, CLIP, z1, Color.hex(0xb9b4aa), Material.Plain);
+    cut = CLIP;
+  }
+  if (GHOST) {
+    mesh.box(x0, cut, z0, x1, y1, z1, Color.hex(0x7fd8ff), Material.Ghost);
+  }
+}
+
+// A roof goes up whole, once the walls under it are done.
+fn gable(mesh: *Mesh, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, height: f32, alongX: bool, c: Color): void {
+  if (y + height > TOP) {
+    TOP = y + height;
+  }
+  if (y + height <= CLIP) {
+    mesh.gable(x0, z0, x1, z1, y, height, alongX, c, Material.Plain);
+  } else if (GHOST) {
+    mesh.gable(x0, z0, x1, z1, y, height, alongX, Color.hex(0x7fd8ff), Material.Ghost);
+  }
+}
+
+fn pyramid(mesh: *Mesh, cx: f32, cz: f32, half: f32, y: f32, height: f32, c: Color, m: Material): void {
+  if (y + height > TOP) {
+    TOP = y + height;
+  }
+  if (y + height <= CLIP) {
+    mesh.pyramid(cx, cz, half, y, height, c, m);
+  } else if (GHOST) {
+    mesh.pyramid(cx, cz, half, y, height, Color.hex(0x7fd8ff), Material.Ghost);
+  }
+}
+
+// The ground a lot is laid on, which a site has from the start.
+fn ground(mesh: *Mesh, plot: Plot, c: Color, m: Material): void {
+  let half: f32 = LOT * 0.5 - 0.15;
+  mesh.box(plot.x - half, CURB, plot.z - half, plot.x + half, CURB + 0.02, plot.z + half, c, m);
+}
+
+fn raise(mesh: *Mesh, index: i64, lot: Lot): void {
+  let plot: Plot = PLOTS.at(index);
+  let rng: Rng = Rng.new(hash2(SEED, index as i32, tierOf(lot.minutes) + (lot.kind as i32) * 8));
+  match (lot.kind) {
+    .Ruin => ruin(mesh, plot, &rng),
+    .Park => park(mesh, plot, &rng),
+    .Building => {
+      match (tierOf(lot.minutes)) {
+        0 => house(mesh, plot, &rng),
+        1 => shop(mesh, plot, &rng),
+        2 => apartments(mesh, plot, &rng),
+        3 => offices(mesh, plot, &rng),
+        else => tower(mesh, plot, &rng),
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Buildings
+// ---------------------------------------------------------------------------
+
+fn house(mesh: *Mesh, plot: Plot, rng: *Rng): void {
+  ground(mesh, plot, Color.hex(0x86b862), Material.Grass);
+  let w: f32 = rng.range(0.9, 1.25);
+  let d: f32 = rng.range(0.85, 1.2);
+  let sx: f32 = 1.0;
+  let sz: f32 = 1.0;
+  if (rng.chance(0.5)) {
+    sx = -1.0;
+  }
+  if (rng.chance(0.5)) {
+    sz = -1.0;
+  }
+  let cx: f32 = plot.x + sx * 0.3;
+  let cz: f32 = plot.z + sz * 0.3;
+  let floors: i32 = 1 + rng.below(2);
+  let top: f32 = CURB + floors as f32 * FLOOR + 0.15;
+  let wall: Color = Color.hex(houseWall(rng.below(6)));
+  let roof: Color = Color.hex(houseRoof(rng.below(5)));
+  part(mesh, cx - w, CURB, cz - d, cx + w, top, cz + d, wall, Material.Wall);
+  let alongX: bool = rng.chance(0.5);
+  gable(mesh, cx - w - 0.12, cz - d - 0.12, cx + w + 0.12, cz + d + 0.12, top, rng.range(0.6, 0.95), alongX, roof);
+  if (rng.chance(0.6)) {
+    part(mesh, cx + w * 0.4, top, cz - d * 0.4, cx + w * 0.4 + 0.22, top + 0.9, cz - d * 0.4 + 0.22,
+        Color.hex(0x8a5a44), Material.Plain);
+  }
+  if (rng.chance(0.75)) {
+    tree(mesh, plot.x - sx * 1.45, plot.z - sz * 1.45, rng.range(0.8, 1.15), rng);
+  }
+  if (rng.chance(0.35)) {
+    tree(mesh, plot.x - sx * 1.45, plot.z + sz * 1.3, rng.range(0.6, 0.9), rng);
+  }
+}
+
+fn shop(mesh: *Mesh, plot: Plot, rng: *Rng): void {
+  ground(mesh, plot, Color.hex(0xb5b0a6), Material.Plain);
+  let w: f32 = rng.range(1.35, 1.7);
+  let d: f32 = rng.range(1.35, 1.7);
+  let floors: i32 = 2 + rng.below(2);
+  let x0: f32 = plot.x - w;
+  let x1: f32 = plot.x + w;
+  let z0: f32 = plot.z - d;
+  let z1: f32 = plot.z + d;
+  let shopTop: f32 = CURB + FLOOR;
+  let top: f32 = CURB + floors as f32 * FLOOR;
+  part(mesh, x0 + 0.08, CURB, z0 + 0.08, x1 - 0.08, shopTop, z1 - 0.08, Color.hex(0x4a6075), Material.Glass);
+  part(mesh, x0, shopTop, z0, x1, top, z1, Color.hex(shopWall(rng.below(6))), Material.Wall);
+  part(mesh, x0 - 0.05, top, z0 - 0.05, x1 + 0.05, top + 0.14, z1 + 0.05, Color.hex(0x6f6a63), Material.Plain);
+
+  // An awning over the shop front, on the side facing the nearest street.
+  let awning: Color = Color.hex(awningColor(rng.below(5)));
+  let low: f32 = shopTop - 0.1;
+  if (rng.chance(0.5)) {
+    let front: f32 = z1;
+    let out: f32 = 0.45;
+    if (plot.z < plot.blockZ as f32 * PITCH) {
+      front = z0;
+      out = -0.45;
+    }
+    let near: f32 = front;
+    let far: f32 = front + out;
+    if (out < 0.0) {
+      near = front + out;
+      far = front;
+    }
+    part(mesh, x0 + 0.2, low, near, x1 - 0.2, low + 0.08, far, awning, Material.Plain);
+  } else {
+    let front: f32 = x1;
+    let out: f32 = 0.45;
+    if (plot.x < plot.blockX as f32 * PITCH) {
+      front = x0;
+      out = -0.45;
+    }
+    let near: f32 = front;
+    let far: f32 = front + out;
+    if (out < 0.0) {
+      near = front + out;
+      far = front;
+    }
+    part(mesh, near, low, z0 + 0.2, far, low + 0.08, z1 - 0.2, awning, Material.Plain);
+  }
+  let ax: f32 = rng.range(-0.6, 0.4);
+  let az: f32 = rng.range(-0.6, 0.4);
+  part(mesh, plot.x + ax, top + 0.14, plot.z + az, plot.x + ax + 0.6, top + 0.5, plot.z + az + 0.45,
+      Color.hex(0x9da3a8), Material.Plain);
+}
+
+fn apartments(mesh: *Mesh, plot: Plot, rng: *Rng): void {
+  ground(mesh, plot, Color.hex(0xb5b0a6), Material.Plain);
+  let w: f32 = rng.range(1.45, 1.75);
+  let d: f32 = rng.range(1.45, 1.75);
+  let floors: i32 = 4 + rng.below(4);
+  let x0: f32 = plot.x - w;
+  let x1: f32 = plot.x + w;
+  let z0: f32 = plot.z - d;
+  let z1: f32 = plot.z + d;
+  let wall: Color = Color.hex(apartmentWall(rng.below(5)));
+  let band: Color = wall.scale(0.82);
+  let top: f32 = CURB + floors as f32 * FLOOR;
+  part(mesh, x0, CURB, z0, x1, top, z1, wall, Material.Wall);
+  // A ledge at every storey, which is what makes it read as flats.
+  for (floor in 1..floors) {
+    let y: f32 = CURB + floor as f32 * FLOOR;
+    part(mesh, x0 - 0.06, y - 0.05, z0 - 0.06, x1 + 0.06, y + 0.02, z1 + 0.06, band, Material.Plain);
+  }
+  part(mesh, x0 - 0.04, top, z0 - 0.04, x1 + 0.04, top + 0.18, z1 + 0.04, band, Material.Plain);
+  if (rng.chance(0.6)) {
+    // A water tank on legs.
+    let tx: f32 = plot.x + rng.range(-0.8, 0.4);
+    let tz: f32 = plot.z + rng.range(-0.8, 0.4);
+    part(mesh, tx, top, tz, tx + 0.08, top + 0.4, tz + 0.08, Color.hex(0x5b4636), Material.Plain);
+    part(mesh, tx + 0.42, top, tz + 0.42, tx + 0.5, top + 0.4, tz + 0.5, Color.hex(0x5b4636), Material.Plain);
+    part(mesh, tx - 0.05, top + 0.4, tz - 0.05, tx + 0.55, top + 1.0, tz + 0.55, Color.hex(0x8b6a4f), Material.Plain);
+    pyramid(mesh, tx + 0.25, tz + 0.25, 0.32, top + 1.0, 0.25, Color.hex(0x6b5240), Material.Plain);
+  } else {
+    part(mesh, plot.x - 0.5, top, plot.z - 0.4, plot.x + 0.3, top + 0.7, plot.z + 0.4, wall.scale(0.9), Material.Plain);
+  }
+}
+
+fn offices(mesh: *Mesh, plot: Plot, rng: *Rng): void {
+  ground(mesh, plot, Color.hex(0xa9a59c), Material.Plain);
+  let w: f32 = rng.range(1.45, 1.8);
+  let d: f32 = rng.range(1.45, 1.8);
+  let floors: i32 = 8 + rng.below(7);
+  let glass: Color = Color.hex(officeGlass(rng.below(5)));
+  let stone: Color = Color.hex(0xd6d1c6);
+  let lobby: f32 = CURB + FLOOR * 1.4;
+  part(mesh, plot.x - w, CURB, plot.z - d, plot.x + w, lobby, plot.z + d, stone, Material.Wall);
+  let setback: i32 = floors * 2 / 3;
+  let low: f32 = lobby + (setback as f32) * FLOOR;
+  let top: f32 = lobby + (floors as f32) * FLOOR;
+  part(mesh, plot.x - w + 0.1, lobby, plot.z - d + 0.1, plot.x + w - 0.1, low, plot.z + d - 0.1, glass, Material.Glass);
+  part(mesh, plot.x - w + 0.05, low, plot.z - d + 0.05, plot.x + w - 0.05, low + 0.12, plot.z + d - 0.05, stone, Material.Plain);
+  let inset: f32 = rng.range(0.35, 0.6);
+  part(mesh, plot.x - w + inset, low + 0.12, plot.z - d + inset, plot.x + w - inset, top, plot.z + d - inset, glass, Material.Glass);
+  part(mesh, plot.x - 0.45, top, plot.z - 0.45, plot.x + 0.45, top + 0.6, plot.z + 0.45, stone.scale(0.85), Material.Plain);
+}
+
+fn tower(mesh: *Mesh, plot: Plot, rng: *Rng): void {
+  ground(mesh, plot, Color.hex(0xa9a59c), Material.Plain);
+  let half: f32 = rng.range(1.55, 1.85);
+  let floors: i32 = 16 + rng.below(13);
+  let glass: Color = Color.hex(towerGlass(rng.below(4)));
+  let trim: Color = Color.hex(0xe2ded5);
+  let y: f32 = CURB;
+  // Two or three setbacks, each narrower than the last.
+  let stages: i32 = 2 + rng.below(2);
+  let left: i32 = floors;
+  for (stage in 0..stages) {
+    let these: i32 = left / (stages - stage);
+    if (stage == 0) {
+      these = floors / 2;
+    }
+    left -= these;
+    let next: f32 = y + these as f32 * FLOOR;
+    part(mesh, plot.x - half, y, plot.z - half, plot.x + half, next, plot.z + half, glass, Material.Glass);
+    part(mesh, plot.x - half - 0.04, next, plot.z - half - 0.04, plot.x + half + 0.04, next + 0.1, plot.z + half + 0.04,
+        trim, Material.Plain);
+    y = next + 0.1;
+    half = half * rng.range(0.7, 0.82);
+  }
+  if (rng.chance(0.5)) {
+    pyramid(mesh, plot.x, plot.z, half, y, half * 2.2, trim, Material.Plain);
+    part(mesh, plot.x - 0.03, y + half * 2.0, plot.z - 0.03, plot.x + 0.03, y + half * 2.2 + 1.4, plot.z + 0.03,
+        Color.hex(0xc0c4c8), Material.Plain);
+  } else {
+    part(mesh, plot.x - half * 0.6, y, plot.z - half * 0.6, plot.x + half * 0.6, y + 0.8, plot.z + half * 0.6,
+        trim.scale(0.9), Material.Plain);
+    part(mesh, plot.x - 0.04, y + 0.8, plot.z - 0.04, plot.x + 0.04, y + 3.0, plot.z + 0.04,
+        Color.hex(0xc0c4c8), Material.Plain);
+  }
+}
+
+fn park(mesh: *Mesh, plot: Plot, rng: *Rng): void {
+  ground(mesh, plot, Color.hex(0x7cb85a), Material.Grass);
+  let path: Color = Color.hex(0xd8c9a8);
+  let half: f32 = LOT * 0.5 - 0.15;
+  mesh.box(plot.x - 0.22, CURB + 0.02, plot.z - half, plot.x + 0.22, CURB + 0.035, plot.z + half, path, Material.Plain);
+  mesh.box(plot.x - half, CURB + 0.02, plot.z - 0.22, plot.x + half, CURB + 0.035, plot.z + 0.22, path, Material.Plain);
+  // A pond in one quarter, trees in the others.
+  let pond: i32 = rng.below(4);
+  for (quarter in 0..4) {
+    let qx: f32 = plot.x - 0.95;
+    let qz: f32 = plot.z - 0.95;
+    if (quarter % 2 == 1) {
+      qx = plot.x + 0.95;
+    }
+    if (quarter >= 2) {
+      qz = plot.z + 0.95;
+    }
+    if (quarter == pond) {
+      mesh.box(qx - 0.6, CURB, qz - 0.6, qx + 0.6, CURB + 0.04, qz + 0.6, Color.hex(0x4f8fb8), Material.Water);
+      continue;
+    }
+    tree(mesh, qx + rng.range(-0.3, 0.3), qz + rng.range(-0.3, 0.3), rng.range(0.9, 1.3), rng);
+    if (rng.chance(0.5)) {
+      tree(mesh, qx + rng.range(-0.45, 0.45), qz + rng.range(-0.45, 0.45), rng.range(0.55, 0.8), rng);
+    }
+  }
+}
+
+// What a session given up leaves: rubble, and what is left of the frame.
+fn ruin(mesh: *Mesh, plot: Plot, rng: *Rng): void {
+  ground(mesh, plot, Color.hex(0x8d7b63), Material.Plain);
+  let pieces: i32 = 7 + rng.below(6);
+  for (i in 0..pieces) {
+    let x: f32 = plot.x + rng.range(-1.5, 1.2);
+    let z: f32 = plot.z + rng.range(-1.5, 1.2);
+    let w: f32 = rng.range(0.15, 0.5);
+    let d: f32 = rng.range(0.15, 0.5);
+    let h: f32 = rng.range(0.08, 0.35);
+    let shade: Color = Color.hex(rubble(rng.below(4)));
+    part(mesh, x, CURB, z, x + w, CURB + h, z + d, shade, Material.Plain);
+  }
+  let columns: i32 = 2 + rng.below(3);
+  for (i in 0..columns) {
+    let x: f32 = plot.x + rng.range(-1.3, 1.1);
+    let z: f32 = plot.z + rng.range(-1.3, 1.1);
+    part(mesh, x, CURB, z, x + 0.2, CURB + rng.range(0.5, 1.9), z + 0.2, Color.hex(0x6e6a66), Material.Plain);
+  }
+  if (rng.chance(0.6)) {
+    let x: f32 = plot.x + rng.range(-1.2, 0.0);
+    let z: f32 = plot.z + rng.range(-1.2, 0.8);
+    part(mesh, x, CURB, z, x + rng.range(0.8, 1.4), CURB + rng.range(0.6, 1.2), z + 0.14, Color.hex(0x9a948b), Material.Wall);
+  }
+}
+
+// A tree: a fir of two cones, or a broadleaf, its crown a pair of boxes.
+fn tree(mesh: *Mesh, x: f32, z: f32, size: f32, rng: *Rng): void {
+  let trunk: Color = Color.hex(0x6b4a33);
+  let leaf: Color = Color.hex(leafColor(rng.below(5)));
+  let base: f32 = CURB;
+  if (rng.chance(0.4)) {
+    part(mesh, x - 0.06 * size, base, z - 0.06 * size, x + 0.06 * size, base + 0.35 * size, z + 0.06 * size, trunk, Material.Plain);
+    pyramid(mesh, x, z, 0.45 * size, base + 0.3 * size, 0.9 * size, leaf, Material.Leaf);
+    pyramid(mesh, x, z, 0.33 * size, base + 0.8 * size, 0.75 * size, leaf.scale(1.08), Material.Leaf);
+    return;
+  }
+  part(mesh, x - 0.07 * size, base, z - 0.07 * size, x + 0.07 * size, base + 0.5 * size, z + 0.07 * size, trunk, Material.Plain);
+  let r: f32 = 0.38 * size;
+  part(mesh, x - r, base + 0.45 * size, z - r, x + r, base + 1.05 * size, z + r, leaf, Material.Leaf);
+  let s: f32 = r * 0.7;
+  part(mesh, x - s, base + 1.05 * size, z - s, x + s, base + 1.3 * size, z + s, leaf.scale(1.1), Material.Leaf);
+}
+
+// Trees on the open land around the city, which give way as it spreads.
+fn woods(mesh: *Mesh): void {
+  let radius: f32 = cityRadius();
+  let first: i32 = 0 - REACH;
+  let last: i32 = REACH + 1;
+  for (bz in first..last) {
+    for (bx in first..last) {
+      if (ACTIVE[blockIndex(bx, bz)]) {
+        continue;
+      }
+      let cx: f32 = bx as f32 * PITCH;
+      let cz: f32 = bz as f32 * PITCH;
+      let distance: f32 = squareRoot(cx * cx + cz * cz);
+      if (distance < radius + PITCH * 0.3 || distance > radius + PITCH * 3.5) {
+        continue;
+      }
+      let rng: Rng = Rng.new(hash2(SEED, bx, bz));
+      let count: i32 = 2 + rng.below(5);
+      for (i in 0..count) {
+        tree(mesh, cx + rng.range(-4.5, 4.5), cz + rng.range(-4.5, 4.5) , rng.range(0.9, 1.6), &rng);
+      }
+    }
+  }
+}
+
+fn fence(mesh: *Mesh, plot: Plot): void {
+  let orange: Color = Color.hex(0xf28c28);
+  let h: f32 = LOT * 0.5 - 0.05;
+  let low: f32 = CURB;
+  let high: f32 = CURB + 0.3;
+  mesh.box(plot.x - h, low, plot.z - h, plot.x + h, high, plot.z - h + 0.04, orange, Material.Plain);
+  mesh.box(plot.x - h, low, plot.z + h - 0.04, plot.x + h, high, plot.z + h, orange, Material.Plain);
+  mesh.box(plot.x - h, low, plot.z - h, plot.x - h + 0.04, high, plot.z + h, orange, Material.Plain);
+  mesh.box(plot.x + h - 0.04, low, plot.z - h, plot.x + h, high, plot.z + h, orange, Material.Plain);
+}
+
+// A tower crane on the lot's outer corner, its jib over the building and its
+// hook just above what has gone up so far.
+fn crane(mesh: *Mesh, plot: Plot, top: f32, hook: f32): void {
+  let yellow: Color = Color.hex(0xf2b705);
+  let dark: Color = Color.hex(0x3a3a3a);
+  let sx: f32 = 1.0;
+  let sz: f32 = 1.0;
+  if (plot.x < 0.0) {
+    sx = -1.0;
+  }
+  if (plot.z < 0.0) {
+    sz = -1.0;
+  }
+  let mx: f32 = plot.x + sx * 1.82;
+  let mz: f32 = plot.z + sz * 1.82;
+  let height: f32 = top + 1.2;
+  mesh.box(mx - 0.11, CURB, mz - 0.11, mx + 0.11, height, mz + 0.11, yellow, Material.Plain);
+  mesh.box(mx - 0.2, height, mz - 0.2, mx + 0.2, height + 0.3, mz + 0.2, dark, Material.Plain);
+  let reach: f32 = 3.4;
+  let x0: f32 = mx - sx * reach;
+  let x1: f32 = mx + sx * 1.1;
+  if (x0 > x1) {
+    let swap: f32 = x0;
+    x0 = x1;
+    x1 = swap;
+  }
+  mesh.box(x0, height + 0.3, mz - 0.08, x1, height + 0.46, mz + 0.08, yellow, Material.Plain);
+  let weight: f32 = mx + sx * 0.9;
+  mesh.box(weight - 0.2, height + 0.05, mz - 0.18, weight + 0.2, height + 0.3, mz + 0.18, dark, Material.Plain);
+  mesh.pyramid(mx, mz, 0.12, height + 0.46, 0.7, yellow, Material.Plain);
+  let hx: f32 = mx - sx * 2.0;
+  let hookY: f32 = hook + 0.5;
+  mesh.box(hx - 0.015, hookY, mz - 0.015, hx + 0.015, height + 0.3, mz + 0.015, dark, Material.Plain);
+  mesh.box(hx - 0.09, hookY - 0.14, mz - 0.09, hx + 0.09, hookY, mz + 0.09, yellow, Material.Plain);
+}
+
+// ---------------------------------------------------------------------------
+// Palettes
+// ---------------------------------------------------------------------------
+
+fn houseWall(i: i32): i32 {
+  return match (i) { 0 => 0xf2e6d0, 1 => 0xe8d5b7, 2 => 0xd9e4dd, 3 => 0xf4d6cc, 4 => 0xcfe0e8, else => 0xf6efe1 };
+}
+
+fn houseRoof(i: i32): i32 {
+  return match (i) { 0 => 0xb5523b, 1 => 0x8c4a3a, 2 => 0x5d6b7a, 3 => 0x9a6b4f, else => 0x4f5d6b };
+}
+
+fn shopWall(i: i32): i32 {
+  return match (i) { 0 => 0xe9c46a, 1 => 0xf4a261, 2 => 0xe07a5f, 3 => 0x8ab17d, 4 => 0xb8c4d6, else => 0xf1e3d3 };
+}
+
+fn awningColor(i: i32): i32 {
+  return match (i) { 0 => 0xd1495b, 1 => 0x2a9d8f, 2 => 0x264653, 3 => 0xedae49, else => 0x6d597a };
+}
+
+fn apartmentWall(i: i32): i32 {
+  return match (i) { 0 => 0xd8cfc4, 1 => 0xc9a58a, 2 => 0xb7c4cf, 3 => 0xe3d5c0, else => 0xb08c7a };
+}
+
+fn officeGlass(i: i32): i32 {
+  return match (i) { 0 => 0x7fa7c9, 1 => 0x6b93b8, 2 => 0x8fb8c8, 3 => 0x5f7f99, else => 0x9bb0c4 };
+}
+
+fn towerGlass(i: i32): i32 {
+  return match (i) { 0 => 0x6e8fb3, 1 => 0x4f6f8f, 2 => 0x87a9c9, else => 0x3f5f7f };
+}
+
+fn leafColor(i: i32): i32 {
+  return match (i) { 0 => 0x5f9e4a, 1 => 0x4e8a3e, 2 => 0x76a957, 3 => 0x3f7a45, else => 0x8cb35a };
+}
+
+fn rubble(i: i32): i32 {
+  return match (i) { 0 => 0x7a746c, 1 => 0x8f8579, 2 => 0x5e5953, else => 0xa39a8d };
+}
+
+// ---------------------------------------------------------------------------
+
+test "the city grows from the centre" {
+  resetCity(7);
+  let first: Plot = PLOTS.at(0);
+  assertEq(first.blockX, 0);
+  assertEq(first.blockZ, 0);
+  assertEq(PLOTS.count, 2500);
+}
+
+test "the same seed lays out the same city" {
+  resetCity(11);
+  let a: Plot = PLOTS.at(40);
+  resetCity(11);
+  let b: Plot = PLOTS.at(40);
+  assertEq(a.x, b.x);
+  assertEq(a.z, b.z);
+}
+
+test "sessions fill plots and count residents" {
+  resetCity(3);
+  addToCity(Kind.Building, 10);
+  addToCity(Kind.Building, 25);
+  addToCity(Kind.Ruin, 45);
+  addToCity(Kind.Park, 0);
+  assertEq(cityCount(), 4);
+  assertEq(cityPopulation(), 16);
+}
+
+test "a site is cut at its progress" {
+  resetCity(5);
+  let mesh: *Mesh = Mesh.new();
+  buildSite(mesh, 120, 0.5, true);
+  assert(siteTop() > 10.0, "a two-hour tower is tall");
+  assert(mesh.vertices() > 0, "the site has something on it");
+}
+
+test "a city mesh holds every building" {
+  resetCity(9);
+  let mesh: *Mesh = Mesh.new();
+  buildCity(mesh);
+  let empty: i32 = mesh.vertices();
+  for (i in 0..50) {
+    addToCity(Kind.Building, 10 + i * 3);
+  }
+  buildCity(mesh);
+  assert(mesh.vertices() > empty + 50 * 30, "every lot adds geometry");
+}

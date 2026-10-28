@@ -1,0 +1,500 @@
+// ---------------------------------------------------------------------------
+// The renderer: the shaders, and every WebGL call that draws a frame.
+//
+// A frame is three passes. The city and the site are drawn into a shadow
+// map, seen from the light; then the sky, a gradient with the sun's glow and
+// at night the stars, behind everything; then the city and the site, lit and
+// shadowed, and last the ghost of what is still to be built, see-through.
+//
+// The shaders paint the materials (mesh.ode's Material, by number): windows
+// on walls, curtain walls on towers, markings on roads. Their uniforms come
+// from the frame block view.ode writes, a pointer into it each.
+//
+// WebGL itself is the page's, reached through gl.ode's imports, so this file
+// is only ever called from the wasm32 module.
+// ---------------------------------------------------------------------------
+
+import { alloc } from "std/mem";
+import { Mesh, FLOATS_PER_VERTEX } from "./mesh";
+import {
+  AMBIENT_GROUND, AMBIENT_SKY, EYE, FOG_FAR, FOG_NEAR, HORIZON, INVERSE_VIEW_PROJ, LIGHT_COLOR, LIGHT_DIR,
+  LIGHT_VIEW_PROJ, NIGHT, SHADOW, SUN_DIR, SUN_DISC, VIEW_PROJ, ZENITH,
+} from "./view";
+import {
+  BLEND, CLAMP_TO_EDGE, COLOR_BUFFER_BIT, COMPARE_REF_TO_TEXTURE, DEPTH_BUFFER_BIT, DEPTH_TEST, FRAGMENT_SHADER,
+  LEQUAL, LINEAR, ONE_MINUS_SRC_ALPHA, SRC_ALPHA, TEXTURE0, TEXTURE_COMPARE_FUNC, TEXTURE_COMPARE_MODE,
+  TEXTURE_MAG_FILTER, TEXTURE_MIN_FILTER, TEXTURE_WRAP_S, TEXTURE_WRAP_T, VERTEX_SHADER,
+  gl_active_texture, gl_bind_array_buffer, gl_bind_framebuffer, gl_bind_texture, gl_bind_vertex_array, gl_blend_func,
+  gl_buffer_floats, gl_clear, gl_create_buffer, gl_create_framebuffer, gl_create_program, gl_create_shader,
+  gl_create_texture, gl_create_vertex_array, gl_depth_attachment, gl_depth_mask, gl_depth_storage, gl_disable,
+  gl_draw_triangles, gl_enable, gl_float_attribute, gl_texture_parameter, gl_uniform1f, gl_uniform1i,
+  gl_uniform3fv, gl_uniform_location, gl_uniform_matrix4fv, gl_use_program, gl_viewport,
+} from "./gl";
+
+let SHADOW_SIZE: i32 = 2048;
+
+// ---------------------------------------------------------------------------
+// Shaders
+// ---------------------------------------------------------------------------
+
+let SCENE_VS: *i8 = `
+  #version 300 es
+  layout(location = 0) in vec3 aPos;
+  layout(location = 1) in vec3 aNormal;
+  layout(location = 2) in vec3 aColor;
+  layout(location = 3) in float aMat;
+  uniform mat4 uViewProj;
+  uniform mat4 uLightViewProj;
+  out vec3 vPos;
+  out vec3 vNormal;
+  out vec3 vColor;
+  out vec4 vLight;
+  flat out int vMat;
+  void main() {
+    vPos = aPos;
+    vNormal = aNormal;
+    vColor = aColor;
+    vMat = int(aMat + 0.5);
+    vLight = uLightViewProj * vec4(aPos, 1.0);
+    gl_Position = uViewProj * vec4(aPos, 1.0);
+  }
+`;
+
+let SCENE_FS: *i8 = `
+  #version 300 es
+  precision highp float;
+  precision highp sampler2DShadow;
+  in vec3 vPos;
+  in vec3 vNormal;
+  in vec3 vColor;
+  in vec4 vLight;
+  flat in int vMat;
+  uniform vec3 uSunDir;
+  uniform vec3 uSunColor;
+  uniform vec3 uSkyColor;
+  uniform vec3 uGroundColor;
+  uniform vec3 uFogColor;
+  uniform vec3 uCamPos;
+  uniform float uNight;
+  uniform float uTime;
+  uniform float uPass;
+  uniform float uFogNear;
+  uniform float uFogFar;
+  uniform float uPitch;
+  uniform float uRoad;
+  uniform float uCurb;
+  uniform float uFloor;
+  uniform float uShadowStrength;
+  uniform sampler2DShadow uShadow;
+  out vec4 outColor;
+
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
+
+  vec3 linear(vec3 c) {
+    return pow(c, vec3(2.2));
+  }
+
+  float shadowAt(float ndl) {
+    vec3 p = vLight.xyz / vLight.w * 0.5 + 0.5;
+    if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z > 1.0) {
+      return 1.0;
+    }
+    float bias = mix(0.0025, 0.0008, ndl);
+    vec2 texel = 1.0 / vec2(textureSize(uShadow, 0));
+    float lit = 0.0;
+    for (int x = -1; x <= 1; x++) {
+      for (int y = -1; y <= 1; y++) {
+        lit += texture(uShadow, vec3(p.xy + vec2(x, y) * texel * 1.2, p.z - bias));
+      }
+    }
+    return lit / 9.0;
+  }
+
+  void main() {
+    bool ghost = vMat == 7;
+    if ((uPass < 0.5) == ghost) {
+      discard;
+    }
+    vec3 n = normalize(vNormal);
+    vec3 toCam = normalize(uCamPos - vPos);
+
+    if (ghost) {
+      float scan = step(0.5, fract(vPos.y * 3.0 - uTime * 0.6));
+      float rim = pow(1.0 - abs(dot(n, toCam)), 2.0);
+      float pulse = 0.85 + 0.15 * sin(uTime * 2.4);
+      vec3 c = vec3(0.45, 0.85, 1.0) * (0.7 + rim * 1.4) * pulse;
+      outColor = vec4(c, (0.16 + 0.16 * scan + rim * 0.35) * pulse);
+      return;
+    }
+
+    vec3 base = linear(vColor);
+    vec3 glow = vec3(0.0);
+    float shine = 0.0;
+    bool upright = abs(n.y) < 0.5;
+    float along = abs(n.x) > 0.5 ? vPos.z : vPos.x;
+    vec2 face = floor(vPos.xz / 4.0) + n.xz * 17.0;
+
+    if (vMat == 1 && upright) {
+      vec2 cell = vec2(along / 0.62, (vPos.y - uCurb) / uFloor);
+      vec2 f = fract(cell);
+      float window = step(0.24, f.x) * step(f.x, 0.76) * step(0.3, f.y) * step(f.y, 0.78);
+      float lit = step(0.42, hash(floor(cell) + face));
+      base = mix(base, linear(vec3(0.3, 0.38, 0.47)), window);
+      glow = window * lit * uNight * linear(vec3(1.0, 0.76, 0.42)) * 1.6;
+      shine = window * 0.6;
+    } else if (vMat == 2 && upright) {
+      vec2 cell = vec2(along / 0.5, (vPos.y - uCurb) / uFloor);
+      vec2 f = fract(cell);
+      float frame = max(1.0 - step(0.07, f.x) * step(f.x, 0.93), 1.0 - step(0.14, f.y));
+      vec3 r = reflect(-toCam, n);
+      vec3 sky = mix(uGroundColor * 1.4, uSkyColor * 1.6, smoothstep(-0.2, 0.6, r.y));
+      vec3 pane = mix(base * 0.55, sky, 0.45);
+      base = mix(pane, linear(vec3(0.82, 0.84, 0.86)), frame * 0.7);
+      float lit = step(0.5, hash(floor(cell) + face));
+      glow = (1.0 - frame) * lit * uNight * linear(vec3(0.95, 0.9, 0.72)) * 1.2;
+      shine = (1.0 - frame) * 1.0;
+    } else if (vMat == 3) {
+      base *= 0.86 + 0.28 * hash(floor(vPos.xz * 1.3));
+    } else if (vMat == 4 && n.y > 0.5) {
+      vec2 u = mod(vPos.xz + uPitch * 0.5, uPitch);
+      vec2 d = min(u, uPitch - u);
+      float halfRoad = uRoad * 0.5;
+      float alongZ = step(d.x, 0.05) * step(0.5, fract(vPos.z * 0.55)) * step(halfRoad, d.y);
+      float alongX = step(d.y, 0.05) * step(0.5, fract(vPos.x * 0.55)) * step(halfRoad, d.x);
+      // Zebra crossings where a road meets a junction.
+      float zebraZ = step(halfRoad, d.y) * step(d.y, halfRoad + 0.5) * step(d.x, halfRoad - 0.15) * step(0.5, fract(vPos.x * 3.0));
+      float zebraX = step(halfRoad, d.x) * step(d.x, halfRoad + 0.5) * step(d.y, halfRoad - 0.15) * step(0.5, fract(vPos.z * 3.0));
+      base = mix(base, linear(vec3(0.95, 0.83, 0.35)), max(alongZ, alongX));
+      base = mix(base, linear(vec3(0.88, 0.88, 0.86)), max(zebraZ, zebraX) * 0.85);
+      base *= 0.92 + 0.12 * hash(floor(vPos.xz * 6.0));
+    } else if (vMat == 5) {
+      base *= 0.85 + 0.3 * hash(floor(vPos.xz * 4.0) + floor(vPos.y * 4.0));
+    } else if (vMat == 6) {
+      float ripple = sin(vPos.x * 9.0 + uTime * 1.5) * sin(vPos.z * 8.0 - uTime * 1.2);
+      base *= 0.9 + 0.1 * ripple;
+      shine = 1.5;
+    }
+
+    float ndl = max(dot(n, uSunDir), 0.0);
+    float shadow = mix(1.0, shadowAt(ndl), uShadowStrength);
+    vec3 ambient = mix(uGroundColor, uSkyColor, n.y * 0.5 + 0.5);
+    float occlusion = upright ? mix(0.55, 1.0, smoothstep(0.0, 1.6, vPos.y - uCurb)) : 1.0;
+    if (vMat == 4 || vMat == 3) {
+      occlusion = 0.95;
+    }
+    vec3 color = base * (ambient * occlusion + uSunColor * ndl * shadow);
+    vec3 halfway = normalize(uSunDir + toCam);
+    color += uSunColor * pow(max(dot(n, halfway), 0.0), 60.0) * shine * shadow;
+    color += glow;
+
+    float dist = length(uCamPos - vPos);
+    color = mix(color, uFogColor, smoothstep(uFogNear, uFogFar, dist));
+    color = color / (1.0 + color * 0.35) * 1.18;
+    outColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+  }
+`;
+
+let DEPTH_VS: *i8 = `
+  #version 300 es
+  layout(location = 0) in vec3 aPos;
+  layout(location = 3) in float aMat;
+  uniform mat4 uLightViewProj;
+  flat out int vMat;
+  void main() {
+    vMat = int(aMat + 0.5);
+    gl_Position = uLightViewProj * vec4(aPos, 1.0);
+  }
+`;
+
+let DEPTH_FS: *i8 = `
+  #version 300 es
+  precision mediump float;
+  flat in int vMat;
+  void main() {
+    if (vMat == 7) {
+      discard;
+    }
+  }
+`;
+
+let SKY_VS: *i8 = `
+  #version 300 es
+  out vec2 vClip;
+  void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)) * 2.0 - 1.0;
+    vClip = p;
+    gl_Position = vec4(p, 0.9999, 1.0);
+  }
+`;
+
+let SKY_FS: *i8 = `
+  #version 300 es
+  precision highp float;
+  in vec2 vClip;
+  uniform mat4 uInverseViewProj;
+  uniform vec3 uZenith;
+  uniform vec3 uHorizon;
+  uniform vec3 uSunDir;
+  uniform vec3 uSunColor;
+  uniform float uNight;
+  out vec4 outColor;
+  float hash(vec3 p) {
+    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+  }
+  void main() {
+    vec4 far = uInverseViewProj * vec4(vClip, 1.0, 1.0);
+    vec4 near = uInverseViewProj * vec4(vClip, -1.0, 1.0);
+    vec3 dir = normalize(far.xyz / far.w - near.xyz / near.w);
+    float up = max(dir.y, 0.0);
+    vec3 color = mix(uHorizon, uZenith, pow(up, 0.55));
+    float sun = max(dot(dir, uSunDir), 0.0);
+    color += uSunColor * (pow(sun, 800.0) * 6.0 + pow(sun, 12.0) * 0.25) * step(0.0, uSunDir.y + 0.1);
+    vec3 cell = floor(dir * 180.0);
+    float star = step(0.9965, hash(cell)) * uNight * smoothstep(0.05, 0.4, dir.y);
+    color += vec3(star) * 0.9;
+    color = color / (1.0 + color * 0.35) * 1.18;
+    outColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+  }
+`;
+
+// ---------------------------------------------------------------------------
+// What lives on the GPU
+// ---------------------------------------------------------------------------
+
+// A mesh on the GPU: its buffer, the attributes that read it, and how many
+// vertices it holds.
+struct GpuMesh {
+  array: i32,
+  buffer: i32,
+  vertices: i32,
+}
+
+// The scene program's uniforms, looked up once.
+struct SceneUniforms {
+  program: i32,
+  viewProj: i32,
+  lightViewProj: i32,
+  sunDir: i32,
+  sunColor: i32,
+  skyColor: i32,
+  groundColor: i32,
+  fogColor: i32,
+  camPos: i32,
+  night: i32,
+  time: i32,
+  pass: i32,
+  fogNear: i32,
+  fogFar: i32,
+  shadowStrength: i32,
+  shadow: i32,
+}
+
+struct SkyUniforms {
+  program: i32,
+  inverseViewProj: i32,
+  zenith: i32,
+  horizon: i32,
+  sunDir: i32,
+  sunColor: i32,
+  night: i32,
+}
+
+struct Gpu {
+  scene: SceneUniforms,
+  sky: SkyUniforms,
+  depth: i32,
+  depthLightViewProj: i32,
+  skyArray: i32,
+  city: GpuMesh,
+  site: GpuMesh,
+  shadowTexture: i32,
+  shadowFramebuffer: i32,
+}
+
+let GPU: *Gpu = null;
+
+fn program(vertex: *i8, fragment: *i8): i32 {
+  let vs: i32 = gl_create_shader(VERTEX_SHADER, vertex);
+  let fs: i32 = gl_create_shader(FRAGMENT_SHADER, fragment);
+  if (vs == 0 || fs == 0) {
+    return 0;
+  }
+  return gl_create_program(vs, fs);
+}
+
+// A vertex as mesh.ode writes it: position, normal, colour, material.
+fn gpuMesh(): GpuMesh {
+  let array: i32 = gl_create_vertex_array();
+  let buffer: i32 = gl_create_buffer();
+  gl_bind_vertex_array(array);
+  gl_bind_array_buffer(buffer);
+  let stride: i32 = (FLOATS_PER_VERTEX * 4) as i32;
+  gl_float_attribute(0, 3, stride, 0);
+  gl_float_attribute(1, 3, stride, 12);
+  gl_float_attribute(2, 3, stride, 24);
+  gl_float_attribute(3, 1, stride, 36);
+  gl_bind_vertex_array(0);
+  return GpuMesh { array: array, buffer: buffer, vertices: 0 };
+}
+
+// Compiles the shaders and makes the buffers and the shadow map. False when
+// a shader would not compile, which the page has already said why.
+export fn startRenderer(pitch: f32, road: f32, curb: f32, floor: f32): bool {
+  let scene: i32 = program(SCENE_VS, SCENE_FS);
+  let depth: i32 = program(DEPTH_VS, DEPTH_FS);
+  let sky: i32 = program(SKY_VS, SKY_FS);
+  if (scene == 0 || depth == 0 || sky == 0) {
+    return false;
+  }
+  GPU = alloc<Gpu>(1);
+  GPU.scene = SceneUniforms {
+    program: scene,
+    viewProj: gl_uniform_location(scene, "uViewProj"),
+    lightViewProj: gl_uniform_location(scene, "uLightViewProj"),
+    sunDir: gl_uniform_location(scene, "uSunDir"),
+    sunColor: gl_uniform_location(scene, "uSunColor"),
+    skyColor: gl_uniform_location(scene, "uSkyColor"),
+    groundColor: gl_uniform_location(scene, "uGroundColor"),
+    fogColor: gl_uniform_location(scene, "uFogColor"),
+    camPos: gl_uniform_location(scene, "uCamPos"),
+    night: gl_uniform_location(scene, "uNight"),
+    time: gl_uniform_location(scene, "uTime"),
+    pass: gl_uniform_location(scene, "uPass"),
+    fogNear: gl_uniform_location(scene, "uFogNear"),
+    fogFar: gl_uniform_location(scene, "uFogFar"),
+    shadowStrength: gl_uniform_location(scene, "uShadowStrength"),
+    shadow: gl_uniform_location(scene, "uShadow"),
+  };
+  GPU.sky = SkyUniforms {
+    program: sky,
+    inverseViewProj: gl_uniform_location(sky, "uInverseViewProj"),
+    zenith: gl_uniform_location(sky, "uZenith"),
+    horizon: gl_uniform_location(sky, "uHorizon"),
+    sunDir: gl_uniform_location(sky, "uSunDir"),
+    sunColor: gl_uniform_location(sky, "uSunColor"),
+    night: gl_uniform_location(sky, "uNight"),
+  };
+  GPU.depth = depth;
+  GPU.depthLightViewProj = gl_uniform_location(depth, "uLightViewProj");
+  GPU.skyArray = gl_create_vertex_array();
+  GPU.city = gpuMesh();
+  GPU.site = gpuMesh();
+
+  // The grid the windows and road markings are painted on never changes.
+  gl_use_program(scene);
+  gl_uniform1f(gl_uniform_location(scene, "uPitch"), pitch);
+  gl_uniform1f(gl_uniform_location(scene, "uRoad"), road);
+  gl_uniform1f(gl_uniform_location(scene, "uCurb"), curb);
+  gl_uniform1f(gl_uniform_location(scene, "uFloor"), floor);
+  gl_uniform1i(GPU.scene.shadow, 0);
+
+  // The shadow map: depth only, compared as it is sampled.
+  GPU.shadowTexture = gl_create_texture();
+  gl_bind_texture(GPU.shadowTexture);
+  gl_depth_storage(SHADOW_SIZE);
+  gl_texture_parameter(TEXTURE_MIN_FILTER, LINEAR);
+  gl_texture_parameter(TEXTURE_MAG_FILTER, LINEAR);
+  gl_texture_parameter(TEXTURE_WRAP_S, CLAMP_TO_EDGE);
+  gl_texture_parameter(TEXTURE_WRAP_T, CLAMP_TO_EDGE);
+  gl_texture_parameter(TEXTURE_COMPARE_MODE, COMPARE_REF_TO_TEXTURE);
+  gl_texture_parameter(TEXTURE_COMPARE_FUNC, LEQUAL);
+  GPU.shadowFramebuffer = gl_create_framebuffer();
+  gl_bind_framebuffer(GPU.shadowFramebuffer);
+  gl_depth_attachment(GPU.shadowTexture);
+  gl_bind_framebuffer(0);
+  return true;
+}
+
+fn upload(target: *GpuMesh, mesh: *Mesh): void {
+  gl_bind_array_buffer(target.buffer);
+  gl_buffer_floats(mesh.data, mesh.count as i32);
+  target.vertices = mesh.vertices();
+}
+
+export fn uploadCity(mesh: *Mesh): void {
+  upload(&GPU.city, mesh);
+}
+
+export fn uploadSite(mesh: *Mesh): void {
+  upload(&GPU.site, mesh);
+}
+
+fn draw(mesh: GpuMesh): void {
+  if (mesh.vertices == 0) {
+    return;
+  }
+  gl_bind_vertex_array(mesh.array);
+  gl_draw_triangles(0, mesh.vertices);
+}
+
+// ---------------------------------------------------------------------------
+// A frame
+// ---------------------------------------------------------------------------
+
+// Draws a frame from the frame block `f` onto a canvas of `width` by
+// `height` pixels; `time` in seconds, for what moves on its own.
+export fn render(f: *f32, width: i32, height: i32, time: f32): void {
+  if (GPU == null) {
+    return;
+  }
+
+  gl_bind_framebuffer(GPU.shadowFramebuffer);
+  gl_viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  gl_clear(DEPTH_BUFFER_BIT);
+  gl_enable(DEPTH_TEST);
+  gl_disable(BLEND);
+  gl_use_program(GPU.depth);
+  gl_uniform_matrix4fv(GPU.depthLightViewProj, f + LIGHT_VIEW_PROJ);
+  draw(GPU.city);
+  draw(GPU.site);
+
+  gl_bind_framebuffer(0);
+  gl_viewport(0, 0, width, height);
+  gl_clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT);
+
+  let sky: SkyUniforms = GPU.sky;
+  gl_depth_mask(0);
+  gl_use_program(sky.program);
+  gl_uniform_matrix4fv(sky.inverseViewProj, f + INVERSE_VIEW_PROJ);
+  gl_uniform3fv(sky.zenith, f + ZENITH);
+  gl_uniform3fv(sky.horizon, f + HORIZON);
+  gl_uniform3fv(sky.sunDir, f + SUN_DIR);
+  gl_uniform3fv(sky.sunColor, f + SUN_DISC);
+  gl_uniform1f(sky.night, f[NIGHT]);
+  gl_bind_vertex_array(GPU.skyArray);
+  gl_draw_triangles(0, 3);
+  gl_depth_mask(1);
+
+  let s: SceneUniforms = GPU.scene;
+  gl_use_program(s.program);
+  gl_uniform_matrix4fv(s.viewProj, f + VIEW_PROJ);
+  gl_uniform_matrix4fv(s.lightViewProj, f + LIGHT_VIEW_PROJ);
+  gl_uniform3fv(s.sunDir, f + LIGHT_DIR);
+  gl_uniform3fv(s.sunColor, f + LIGHT_COLOR);
+  gl_uniform3fv(s.skyColor, f + AMBIENT_SKY);
+  gl_uniform3fv(s.groundColor, f + AMBIENT_GROUND);
+  gl_uniform3fv(s.fogColor, f + HORIZON);
+  gl_uniform3fv(s.camPos, f + EYE);
+  gl_uniform1f(s.night, f[NIGHT]);
+  gl_uniform1f(s.shadowStrength, f[SHADOW]);
+  gl_uniform1f(s.fogNear, f[FOG_NEAR]);
+  gl_uniform1f(s.fogFar, f[FOG_FAR]);
+  gl_uniform1f(s.time, time);
+  gl_active_texture(TEXTURE0);
+  gl_bind_texture(GPU.shadowTexture);
+
+  gl_uniform1f(s.pass, 0.0);
+  draw(GPU.city);
+  draw(GPU.site);
+
+  // The ghost last, see-through, writing no depth.
+  gl_enable(BLEND);
+  gl_blend_func(SRC_ALPHA, ONE_MINUS_SRC_ALPHA);
+  gl_depth_mask(0);
+  gl_uniform1f(s.pass, 1.0);
+  draw(GPU.site);
+  gl_depth_mask(1);
+  gl_disable(BLEND);
+}

@@ -1,0 +1,87 @@
+// ---------------------------------------------------------------------------
+// Randomness that repeats: the same seed grows the same city, so the city is
+// never stored -- only the sessions that built it are, and it is grown again
+// from them each time the app opens.
+// ---------------------------------------------------------------------------
+
+// xorshift32: small, fast, and good enough to place houses.
+export struct Rng {
+  state: u32,
+
+  fn new(seed: u32): Rng {
+    let state: u32 = seed ^ 0x9e3779b9;
+    if (state == 0) {
+      state = 1;
+    }
+    return Rng { state: state };
+  }
+
+  fn next(self: *Rng): u32 {
+    let x: u32 = self.state;
+    x = x ^ (x << 13);
+    x = x ^ (x >> 17);
+    x = x ^ (x << 5);
+    self.state = x;
+    return x;
+  }
+
+  // In [0, 1).
+  fn float(self: *Rng): f32 {
+    return (self.next() >> 8) as f32 / 16777216.0;
+  }
+
+  // In [low, high).
+  fn range(self: *Rng, low: f32, high: f32): f32 {
+    return low + (high - low) * self.float();
+  }
+
+  // In [0, count).
+  fn below(self: *Rng, count: i32): i32 {
+    return (self.next() % (count as u32)) as i32;
+  }
+
+  fn chance(self: *Rng, odds: f32): bool {
+    return self.float() < odds;
+  }
+}
+
+// Mixes a seed and two numbers into one, so a plot's building depends on
+// where it is and nothing else.
+export fn hash2(seed: u32, a: i32, b: i32): u32 {
+  let h: u32 = seed ^ ((a as u32) * 0x85ebca6b) ^ ((b as u32) * 0xc2b2ae35);
+  h = h ^ (h >> 16);
+  h = h * 0x7feb352d;
+  h = h ^ (h >> 15);
+  h = h * 0x846ca68b;
+  h = h ^ (h >> 16);
+  return h;
+}
+
+test "the same seed gives the same numbers" {
+  let a: Rng = Rng.new(42);
+  let b: Rng = Rng.new(42);
+  for (i in 0..100) {
+    assertEq(a.next(), b.next());
+  }
+}
+
+test "floats stay in [0, 1)" {
+  let rng: Rng = Rng.new(7);
+  for (i in 0..10000) {
+    let f: f32 = rng.float();
+    assert(f >= 0.0 && f < 1.0, "float out of range");
+  }
+}
+
+test "below stays below" {
+  let rng: Rng = Rng.new(3);
+  for (i in 0..1000) {
+    let n: i32 = rng.below(6);
+    assert(n >= 0 && n < 6, "below out of range");
+  }
+}
+
+test "hash2 tells places apart" {
+  assert(hash2(1, 0, 1) != hash2(1, 1, 0), "swapped coordinates collide");
+  assert(hash2(1, 2, 3) != hash2(2, 2, 3), "seeds collide");
+}
