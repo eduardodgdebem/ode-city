@@ -33,6 +33,17 @@ body {
   -webkit-user-select: none;
 }
 
+/* iOS 26 lays out an app on the home screen, under a translucent status
+   bar, a status bar short of the screen while the page is no taller than
+   that, and draws nothing fixed below it (WebKit bug 301108). A page at
+   least the screen's height gets the whole screen. min() keeps it from
+   scrolling where the status bar is opaque and the inset is 0. */
+@media (display-mode: standalone) {
+  html {
+    min-height: min(100lvh, calc(100% + env(safe-area-inset-top)));
+  }
+}
+
 button {
   font: inherit;
   color: inherit;
@@ -46,10 +57,7 @@ button {
   top: 0;
   left: 0;
   width: 100%;
-  /* An app on the iOS home screen, under a translucent status bar, is laid
-     out short of the screen's foot; reaching past it, by as much as
-     app.js measures it short, covers what would be left bare. */
-  height: calc(100% + var(--screen-gap, 0px));
+  height: 100%;
   touch-action: none;
   display: block;
 }
