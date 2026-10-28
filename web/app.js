@@ -33,6 +33,8 @@ const DEMO = new URLSearchParams(location.search).has('demo')
 let state = DEMO ? demo(DEMO) : load();
 let ode;
 let canvas;
+let gl;
+let lastEdge = 0;
 let lastTick = 0;
 let giveUpArmed = 0;
 let wakeLock = null;
@@ -45,7 +47,7 @@ boot().catch((error) => {
 
 async function boot() {
   canvas = $('scene');
-  const gl = canvas.getContext('webgl2', { antialias: true, powerPreference: 'high-performance' });
+  gl = canvas.getContext('webgl2', { antialias: true, powerPreference: 'high-performance' });
   if (!gl) {
     throw new Error('this device does not support WebGL2');
   }
@@ -348,7 +350,30 @@ function frame(time) {
   const local = new Date(now);
   const hours = local.getHours() + local.getMinutes() / 60 + local.getSeconds() / 3600;
   ode.frame(now, dt, width, height, hours, time / 1000);
+  if (now - lastEdge > 1000) {
+    lastEdge = now;
+    matchEdge(width);
+  }
   requestAnimationFrame(frame);
+}
+
+// Paints the page behind the canvas the colour of the frame's bottom edge.
+// On iOS an app on the home screen can show a strip below the canvas that
+// nothing draws into but the page's own background; this way it carries
+// the city's ground on, rather than a dark bar. Read straight after the
+// draw, while the frame is still there to read.
+const edge = new Uint8Array(4 * 16);
+function matchEdge(width) {
+  gl.readPixels(Math.max(0, Math.floor(width / 2) - 8), 0, 16, 1, gl.RGBA, gl.UNSIGNED_BYTE, edge);
+  let [r, g, b] = [0, 0, 0];
+  for (let i = 0; i < 16; i++) {
+    r += edge[i * 4];
+    g += edge[i * 4 + 1];
+    b += edge[i * 4 + 2];
+  }
+  const colour = `rgb(${Math.round(r / 16)}, ${Math.round(g / 16)}, ${Math.round(b / 16)})`;
+  document.documentElement.style.backgroundColor = colour;
+  document.body.style.backgroundColor = colour;
 }
 
 // The canvas's size in pixels, matched to how big it is drawn.
