@@ -1,5 +1,7 @@
 # Ode City
 
+![A big Ode City: towers, apartment blocks and houses, ringed by woods](docs/city.jpg)
+
 A focus timer that builds a city while you work, written in Ode and compiled
 to WebAssembly.
 
@@ -10,6 +12,9 @@ and the construction collapses into a ruin. The city is procedurally
 generated from a seed and grows outward a block at a time, rendered in 3D
 with WebGL2: shadows, lit windows at night, and a sky that follows your local
 time.
+
+To see a big city without the work behind it, open the app with `?demo` (or
+`?demo=1500`): it makes up that many sessions and saves none of them.
 
 It is a PWA: it installs to the home screen, runs offline, and keeps
 everything on the device. Try it at **https://eduardodgdebem.github.io/ode-city/**
