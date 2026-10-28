@@ -671,27 +671,6 @@ dialog::backdrop {
 }
 
 .switch small,
-.source {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 12px;
-  padding: 12px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 600;
-  text-decoration: none;
-}
-
-.source svg {
-  width: 18px;
-  height: 18px;
-  fill: currentColor;
-}
-
 .fine {
   display: block;
   color: var(--ink-soft);
@@ -784,6 +763,27 @@ dialog::backdrop {
 
 .history .empty {
   color: var(--ink-faint);
+}
+
+.source {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.source svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
 .sheet-actions {
