@@ -2,7 +2,7 @@
 
 ![A big Ode City: towers, apartment blocks and houses, ringed by woods](docs/city.jpg)
 
-A focus timer that builds a city while you work, written in Ode and compiled
+A focus timer that builds a city while you work, written in [Ode](https://github.com/eduardodgdebem/ode) and compiled
 to WebAssembly.
 
 Set a timer and a building goes up on the next plot: the longer the session,
@@ -26,7 +26,7 @@ to `src/`.
 
 ## Building
 
-You need the Ode compiler, and LLVM with `wasm-ld` for the wasm32 target.
+You need the [Ode compiler](https://github.com/eduardodgdebem/ode), and LLVM with `wasm-ld` for the wasm32 target.
 
 ```bash
 ode build          # src/ -> web/city.wasm
