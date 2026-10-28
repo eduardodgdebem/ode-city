@@ -2,9 +2,14 @@
 // The renderer: the shaders, and every WebGL call that draws a frame.
 //
 // A frame is three passes. The city and the site are drawn into a shadow
-// map, seen from the light; then the sky, a gradient with the sun's glow and
-// at night the stars, behind everything; then the city and the site, lit and
-// shadowed, and last the ghost of what is still to be built, see-through.
+// map, seen from the light; then the city, the site and the life in it, lit
+// and shadowed; then the sky, a gradient with the sun's glow and at night
+// the stars, only where nothing stands in front of it; and last the ghost of
+// what is still to be built, see-through.
+//
+// The shadow map is kept from frame to frame: it is drawn again only when
+// the city or the site changes or the sun has moved on, since what moves on
+// its own -- people, cars, birds -- casts none.
 //
 // The shaders paint the materials (mesh.ode's Material, by number): windows
 // on walls, curtain walls on towers, markings on roads. Their uniforms come
@@ -32,6 +37,15 @@ import {
 } from "./gl";
 
 let SHADOW_SIZE: i32 = 2048;
+// How far the light may turn, in each of its direction's parts, before the
+// shadow map is drawn again: some forty seconds of the sun's going.
+let SHADOW_TURN: f32 = 0.003;
+
+// Whether the shadow map is out of date, and the light it was drawn for:
+// the one the scene is shaded against, so shadows fall where it drew them.
+let SHADOW_STALE: bool = true;
+let HELD_LIGHT_VIEW_PROJ: *f32 = null;
+let HELD_LIGHT_DIR: *f32 = null;
 
 // ---------------------------------------------------------------------------
 // Shaders
@@ -431,10 +445,12 @@ fn upload(target: *GpuMesh, mesh: *Mesh): void {
 
 export fn uploadCity(mesh: *Mesh): void {
   upload(&GPU.city, mesh);
+  SHADOW_STALE = true;
 }
 
 export fn uploadSite(mesh: *Mesh): void {
   upload(&GPU.site, mesh);
+  SHADOW_STALE = true;
 }
 
 export fn uploadLife(mesh: *Mesh): void {
@@ -457,13 +473,13 @@ fn draw(mesh: GpuMesh): void {
 // A frame
 // ---------------------------------------------------------------------------
 
-// Draws a frame from the frame block `f` onto a canvas of `width` by
-// `height` pixels; `time` in seconds, for what moves on its own.
-export fn render(f: *f32, width: i32, height: i32, time: f32): void {
-  if (GPU == null) {
-    return;
+// Draws the city and the site into the shadow map, from the light, and
+// holds the light it was drawn for.
+fn drawShadows(f: *f32): void {
+  if (HELD_LIGHT_VIEW_PROJ == null) {
+    HELD_LIGHT_VIEW_PROJ = alloc<f32>(16);
+    HELD_LIGHT_DIR = alloc<f32>(3);
   }
-
   gl_bind_framebuffer(GPU.shadowFramebuffer);
   gl_viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
   gl_clear(DEPTH_BUFFER_BIT);
@@ -473,29 +489,47 @@ export fn render(f: *f32, width: i32, height: i32, time: f32): void {
   gl_uniform_matrix4fv(GPU.depthLightViewProj, f + LIGHT_VIEW_PROJ);
   draw(GPU.city);
   draw(GPU.site);
-  draw(GPU.life);
+  for (i in 0..16) {
+    HELD_LIGHT_VIEW_PROJ[i] = f[LIGHT_VIEW_PROJ + i];
+  }
+  for (i in 0..3) {
+    HELD_LIGHT_DIR[i] = f[LIGHT_DIR + i];
+  }
+  SHADOW_STALE = false;
+}
+
+// Whether the light has turned from the one the shadow map was drawn for.
+fn turned(dir: *f32): bool {
+  for (i in 0..3) {
+    let by: f32 = dir[i] - HELD_LIGHT_DIR[i];
+    if (by > SHADOW_TURN || by < 0.0 - SHADOW_TURN) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Draws a frame from the frame block `f` onto a canvas of `width` by
+// `height` pixels; `time` in seconds, for what moves on its own.
+export fn render(f: *f32, width: i32, height: i32, time: f32): void {
+  if (GPU == null) {
+    return;
+  }
+
+  if (SHADOW_STALE || turned(f + LIGHT_DIR)) {
+    drawShadows(f);
+  }
 
   gl_bind_framebuffer(0);
   gl_viewport(0, 0, width, height);
   gl_clear(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT);
-
-  let sky: SkyUniforms = GPU.sky;
-  gl_depth_mask(0);
-  gl_use_program(sky.program);
-  gl_uniform_matrix4fv(sky.inverseViewProj, f + INVERSE_VIEW_PROJ);
-  gl_uniform3fv(sky.zenith, f + ZENITH);
-  gl_uniform3fv(sky.horizon, f + HORIZON);
-  gl_uniform3fv(sky.sunDir, f + SUN_DIR);
-  gl_uniform3fv(sky.sunColor, f + SUN_DISC);
-  gl_uniform1f(sky.night, f[NIGHT]);
-  gl_bind_vertex_array(GPU.skyArray);
-  gl_draw_triangles(0, 3);
-  gl_depth_mask(1);
+  gl_enable(DEPTH_TEST);
+  gl_disable(BLEND);
 
   let s: SceneUniforms = GPU.scene;
   gl_use_program(s.program);
   gl_uniform_matrix4fv(s.viewProj, f + VIEW_PROJ);
-  gl_uniform_matrix4fv(s.lightViewProj, f + LIGHT_VIEW_PROJ);
+  gl_uniform_matrix4fv(s.lightViewProj, HELD_LIGHT_VIEW_PROJ);
   gl_uniform3fv(s.sunDir, f + LIGHT_DIR);
   gl_uniform3fv(s.sunColor, f + LIGHT_COLOR);
   gl_uniform3fv(s.skyColor, f + AMBIENT_SKY);
@@ -514,6 +548,22 @@ export fn render(f: *f32, width: i32, height: i32, time: f32): void {
   draw(GPU.city);
   draw(GPU.site);
   draw(GPU.life);
+
+  // The sky after what stands in front of it, at the far plane and testing
+  // depth, so only what shows of it is shaded.
+  let sky: SkyUniforms = GPU.sky;
+  gl_depth_mask(0);
+  gl_use_program(sky.program);
+  gl_uniform_matrix4fv(sky.inverseViewProj, f + INVERSE_VIEW_PROJ);
+  gl_uniform3fv(sky.zenith, f + ZENITH);
+  gl_uniform3fv(sky.horizon, f + HORIZON);
+  gl_uniform3fv(sky.sunDir, f + SUN_DIR);
+  gl_uniform3fv(sky.sunColor, f + SUN_DISC);
+  gl_uniform1f(sky.night, f[NIGHT]);
+  gl_bind_vertex_array(GPU.skyArray);
+  gl_draw_triangles(0, 3);
+  gl_depth_mask(1);
+  gl_use_program(s.program);
 
   // The ghost and the glow last, see-through, writing no depth.
   gl_enable(BLEND);
