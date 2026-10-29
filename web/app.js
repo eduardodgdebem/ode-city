@@ -177,7 +177,8 @@ function load() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORE));
     if (saved && Array.isArray(saved.sessions)) {
-      return { ...fresh(), ...saved, settings: { ...fresh().settings, ...saved.settings } };
+      const name = typeof saved.name === 'string' ? saved.name.slice(0, 40) : '';
+      return { ...fresh(), ...saved, name, settings: { ...fresh().settings, ...saved.settings } };
     }
   } catch {
     // Storage blocked or corrupt: start over rather than not at all.
@@ -188,6 +189,7 @@ function load() {
 function fresh() {
   return {
     seed: (Math.random() * 0x7fffffff) | 0,
+    name: '',
     sessions: [],
     settings: { mode: 0, minutes: 25, focus: 25, short: 5, long: 15, rounds: 4, strict: false, sound: true, sky: 'auto', compact: false },
     timer: null,
@@ -199,6 +201,7 @@ function fresh() {
 function demo(count) {
   const state = fresh();
   state.seed = 20261028;
+  state.name = 'Odeville';
   let random = 1;
   const next = () => (random = (random * 16807) % 2147483647) / 2147483647;
   const minutes = [10, 15, 25, 25, 30, 45, 50, 60, 75, 90, 100, 120];
@@ -601,6 +604,7 @@ function bindUi() {
   $('open-settings').addEventListener('click', () => {
     $('strict').checked = state.settings.strict;
     $('sound').checked = state.settings.sound;
+    $('city-name').value = state.name;
     renderSky();
     renderTotals();
     renderHistory();
@@ -638,6 +642,21 @@ function bindUi() {
       renderSky();
     });
   }
+  const name = $('city-name');
+  name.addEventListener('input', () => {
+    state.name = name.value.trim();
+    renderName();
+    save();
+  });
+  name.addEventListener('change', () => {
+    name.value = state.name;
+  });
+  name.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      name.blur();
+    }
+  });
   $('new-city').addEventListener('click', () => {
     if (!confirm('Start a new city? Your current city and its history will be cleared.')) {
       return;
@@ -726,6 +745,7 @@ function setMode(mode) {
 }
 
 function render() {
+  renderName();
   const p = phase();
   const s = state.settings;
   const pomodoro = s.mode === 1;
@@ -861,6 +881,16 @@ function renderSky() {
     button.setAttribute('role', 'radio');
   }
   $('sky-note').textContent = SKY_NOTES[state.settings.sky] ?? '';
+}
+
+// The city's name, under the stats and in the tab's title; nothing until it
+// has one.
+function renderName() {
+  const title = $('city-title');
+  $('city-title-text').textContent = state.name;
+  title.hidden = !state.name;
+  document.body.classList.toggle('named', Boolean(state.name));
+  document.title = state.name ? `${state.name} · Ode City` : 'Ode City';
 }
 
 // Everything the city has seen, in four numbers.

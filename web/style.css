@@ -114,6 +114,35 @@ button {
   white-space: nowrap;
 }
 
+/* The city's name, when it has one, hung under the stats. */
+.city-title {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 16px;
+  right: calc(16px + var(--hud-height) + 10px);
+  display: flex;
+  justify-content: center;
+  margin: 0;
+}
+.city-title[hidden] {
+  display: none;
+}
+.city-title span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: var(--glass);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--line);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .icon-button {
   pointer-events: auto;
   /* Square, and as tall as the stats beside it. */
@@ -624,6 +653,10 @@ body.break .mini-clock {
   pointer-events: none;
   transition: opacity 0.25s, transform 0.25s;
 }
+/* Below the city's name, when one hangs under the stats. */
+body.named .inspect {
+  top: calc(env(safe-area-inset-top) + 96px);
+}
 
 .inspect.show {
   opacity: 1;
@@ -783,9 +816,7 @@ dialog.closing::backdrop {
 
 /* What the city has come to, in four numbers. */
 .city-card {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  padding: 14px 6px;
+  padding: 6px 6px 14px;
   border-radius: 20px;
   background:
     radial-gradient(120% 140% at 0% 0%, rgba(255, 181, 71, 0.22), transparent 60%),
@@ -794,12 +825,48 @@ dialog.closing::backdrop {
   text-align: center;
 }
 
-.city-card div {
+.city-card .totals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.city-card .totals div {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
+.city-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 8px 10px;
+  padding: 6px 2px;
+  border-bottom: 1px solid rgba(255, 181, 71, 0.18);
+  color: var(--ink-faint);
+  cursor: text;
+}
+.city-name input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-align: left;
+  outline: none;
+}
+.city-name input::placeholder {
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+.city-name:focus-within {
+  border-bottom-color: var(--amber);
+  color: var(--amber);
+}
 .city-card .value {
   font-size: 20px;
   font-weight: 700;
