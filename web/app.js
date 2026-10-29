@@ -42,6 +42,7 @@ boot().catch((error) => {
   console.error(error);
   $('loading').textContent = `Could not start: ${error.message}`;
 });
+openLinksOutside();
 
 async function boot() {
   canvas = $('scene');
@@ -102,6 +103,36 @@ async function boot() {
 // ---------------------------------------------------------------------------
 // Version and updates
 // ---------------------------------------------------------------------------
+
+// Links out of the app open in the browser itself. Installed on iOS, a
+// target=_blank link only gets a Safari sheet over the app, so there it is
+// handed to Safari through x-safari-https:, which iOS 17 and later know; if
+// nothing took it, the page is still showing, and the sheet it is. Elsewhere
+// _blank already reaches the browser.
+function openLinksOutside() {
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  const agent = navigator.userAgent;
+  const ios = /iPhone|iPad|iPod/.test(agent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  // An iPad passes for a Mac, so its version is Safari's, which follows iOS.
+  const version = Number(agent.match(/ OS (\d+)_/)?.[1] ?? agent.match(/Version\/(\d+)/)?.[1] ?? 0);
+  if (!standalone || !ios || version < 17) {
+    return;
+  }
+  document.addEventListener('click', (event) => {
+    const link = event.target.closest('a[target="_blank"]');
+    if (!link || !link.href.startsWith('https://')) {
+      return;
+    }
+    event.preventDefault();
+    const url = link.href;
+    location.href = `x-safari-${url}`;
+    setTimeout(() => {
+      if (document.visibilityState === 'visible') {
+        window.open(url, '_blank', 'noopener');
+      }
+    }, 800);
+  });
+}
 
 // Set once a newer worker has taken over: this page is the old version
 // until it is reloaded.
