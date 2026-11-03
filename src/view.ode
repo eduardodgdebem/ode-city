@@ -5,8 +5,9 @@
 // The camera circles a target. Dragging turns it, dragging with two fingers
 // slides it across the ground, pinching moves it in and out, and left alone
 // it turns slowly. Where it looks follows the game --
-// the whole city while idle, the building site during focus -- easing there
-// rather than jumping.
+// the whole city while idle, the building going up during focus -- easing
+// there rather than jumping. During focus, a view moved away comes back to
+// the building once it is left alone.
 // ---------------------------------------------------------------------------
 
 import { alloc } from "std/mem";
@@ -49,6 +50,9 @@ export struct Camera {
   pan: Vec3,
   reach: f32,
   building: bool,
+  // How far back the building is best seen from, which a view left alone
+  // during focus returns to.
+  siteDistance: f32,
   lastInput: f64,
 
   fn new(): Camera {
@@ -62,6 +66,7 @@ export struct Camera {
       pan: Vec3.new(0.0, 0.0, 0.0),
       reach: 40.0,
       building: false,
+      siteDistance: 40.0,
       lastInput: 0.0,
     };
   }
@@ -107,16 +112,21 @@ export struct Camera {
       self.building = building;
     }
     if (building) {
-      self.goal = Vec3.new(site.x * 0.6, smaller(siteTop * 0.35, 6.0), site.z * 0.6);
+      self.goal = Vec3.new(site.x, smaller(siteTop * 0.35, 6.0), site.z);
       self.distanceGoal = larger(self.distanceGoal * 0.8, siteTop * 1.6 + 18.0);
+      self.siteDistance = self.distanceGoal;
     }
   }
 
   fn update(self: *Camera, dt: f32, now: f64): void {
+    let ease: f32 = 1.0 - exponent(0.0 - dt * 2.2);
     if (now - self.lastInput > IDLE_MS) {
       self.yaw += dt * 0.035;
+      if (self.building) {
+        self.pan = self.pan.scale(1.0 - ease);
+        self.distanceGoal = self.siteDistance;
+      }
     }
-    let ease: f32 = 1.0 - exponent(0.0 - dt * 2.2);
     self.distance += (self.distanceGoal - self.distance) * ease;
     self.target = self.target.lerp(self.goal.add(self.pan), ease);
   }
@@ -215,6 +225,30 @@ test "starting a session clears a slide" {
   camera.slide(100.0, 50.0, 0.0);
   camera.aim(40.0, 1.0, true, Vec3.new(5.0, 0.0, 5.0), 10.0);
   assertEq(camera.pan.length(), 0.0);
+}
+
+test "left alone during focus, the view comes back to the building" {
+  let camera: Camera = Camera.new();
+  camera.aim(40.0, 1.0, true, Vec3.new(5.0, 0.0, 5.0), 10.0);
+  let near: f32 = camera.distanceGoal;
+  camera.slide(100.0, 50.0, 0.0);
+  camera.zoom(3.0, 0.0);
+  camera.update(0.1, 2000.0);
+  assert(camera.pan.length() > 1.0, "the view came back while being moved");
+  for (i in 0..200) {
+    camera.update(0.05, 9000.0);
+  }
+  assert(camera.pan.length() < 0.01, "the slide did not come back");
+  assertEq(camera.distanceGoal, near);
+  assert(camera.target.x > 4.9, "the camera does not look at the building");
+}
+
+test "left alone while idle, a slide stays" {
+  let camera: Camera = Camera.new();
+  camera.slide(100.0, 50.0, 0.0);
+  let far: f32 = camera.pan.length();
+  camera.update(0.1, 9000.0);
+  assertEq(camera.pan.length(), far);
 }
 
 test "a portrait screen stands further back" {
