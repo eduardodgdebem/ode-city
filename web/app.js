@@ -568,6 +568,39 @@ function bindUi() {
     s.minutes = Number(slider.value);
   }));
 
+  // Tapped while idle, the countdown's clock takes any length typed, kept
+  // to what a pomodoro's focus allows; anything else puts back what was
+  // there.
+  const clock = $('clock');
+  const edit = $('clock-edit');
+  const openEdit = () => {
+    if (!clock.classList.contains('editable')) {
+      return;
+    }
+    edit.value = state.settings.minutes;
+    clock.hidden = true;
+    edit.hidden = false;
+    edit.focus();
+  };
+  clock.addEventListener('click', openEdit);
+  clock.addEventListener('keydown', (event) => (event.key === 'Enter' || event.key === ' ') && openEdit());
+  edit.addEventListener('focus', () => edit.select());
+  edit.addEventListener('keydown', (event) => event.key === 'Enter' && edit.blur());
+  edit.addEventListener('change', () => {
+    const typed = Math.round(Number(edit.value));
+    if (edit.value.trim() === '' || !Number.isFinite(typed)) {
+      return;
+    }
+    changeSettings((s) => {
+      s.minutes = Math.min(180, Math.max(1, typed));
+    });
+  });
+  edit.addEventListener('blur', () => {
+    edit.hidden = true;
+    clock.hidden = false;
+    render();
+  });
+
   for (const stepper of document.querySelectorAll('.stepper')) {
     const key = stepper.dataset.key;
     const [less, more] = stepper.querySelectorAll('button');
@@ -805,7 +838,15 @@ function render() {
   const underway = ode.cycle_underway() === 1;
   $('pomodoro-controls').hidden = !pomodoro || underway;
 
-  $('minutes').style.setProperty('--fill', `${((s.minutes - 10) / 110) * 100}%`);
+  // A typed length can fall outside the slider's range; it rests at the end.
+  const slider = $('minutes');
+  slider.value = s.minutes;
+  $('minutes').style.setProperty('--fill', `${Math.min(1, Math.max(0, (s.minutes - 10) / 110)) * 100}%`);
+  const editable = !pomodoro && !running;
+  $('clock').classList.toggle('editable', editable);
+  $('clock').tabIndex = editable ? 0 : -1;
+  $('clock').setAttribute('role', editable ? 'button' : 'timer');
+  $('clock').setAttribute('aria-label', editable ? 'Focus minutes, tap to type' : '');
   const chosen = ode.tier_of(s.minutes);
   $('tiers').querySelectorAll('span').forEach((label, i) => label.classList.toggle('on', i === chosen));
   for (const stepper of document.querySelectorAll('.stepper')) {

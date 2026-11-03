@@ -223,6 +223,48 @@ body.break .clock {
   color: var(--ghost);
 }
 
+/* Idle in the countdown, the clock is a field: tapped, it takes minutes,
+   looking just as it did. */
+.clock.editable {
+  cursor: text;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.clock-edit {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: clamp(64px, 20vw, 84px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  text-align: center;
+  caret-color: var(--amber);
+  -moz-appearance: textfield;
+  appearance: textfield;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.clock-edit[hidden] {
+  display: none;
+}
+
+.clock-edit::-webkit-inner-spin-button,
+.clock-edit::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.clock-edit:focus {
+  outline: none;
+}
+
 .progress {
   height: 4px;
   border-radius: 4px;
