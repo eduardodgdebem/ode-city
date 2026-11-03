@@ -10,7 +10,7 @@
 // Pages lets keep a file ten minutes: an update would otherwise fetch the
 // same old files again.
 
-const VERSION = 'ode-city-18';
+const VERSION = 'ode-city-19';
 const SHELL = [
   './',
   'index.html',

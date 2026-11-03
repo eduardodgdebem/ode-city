@@ -23,7 +23,7 @@ import { alloc } from "std/mem";
 import { Mesh, FLOATS_PER_VERTEX } from "./mesh";
 import {
   AMBIENT_GROUND, AMBIENT_SKY, EYE, FOG_FAR, FOG_NEAR, HORIZON, INVERSE_VIEW_PROJ, LIGHT_COLOR, LIGHT_DIR,
-  LIGHT_VIEW_PROJ, NIGHT, SHADOW, SUN_DIR, SUN_DISC, VIEW_PROJ, ZENITH,
+  LIGHT_VIEW_PROJ, NIGHT, SHADOW, SHADOW_DEPTH, SHADOW_REACH, SUN_DIR, SUN_DISC, VIEW_PROJ, ZENITH,
 } from "./view";
 import {
   BLEND, CLAMP_TO_EDGE, COLOR_BUFFER_BIT, COMPARE_REF_TO_TEXTURE, DEPTH_BUFFER_BIT, DEPTH_TEST, FRAGMENT_SHADER,
@@ -46,6 +46,13 @@ let SHADOW_TURN: f32 = 0.003;
 let SHADOW_STALE: bool = true;
 let HELD_LIGHT_VIEW_PROJ: *f32 = null;
 let HELD_LIGHT_DIR: *f32 = null;
+// How far a lookup into the held shadow map steps off its surface, along
+// the normal, and how much nearer than the map it may be and still be lit:
+// both in world units, so a shadow starts where what casts it stands,
+// however big the city and so the map. A bias in the map's own depth would
+// grow with it, and lift shadows off the ground.
+let HELD_SHADOW_OFFSET: f32 = 0.0;
+let HELD_SHADOW_BIAS: f32 = 0.0;
 
 // ---------------------------------------------------------------------------
 // Shaders
@@ -60,6 +67,7 @@ let SCENE_VS: *i8 = `
   uniform mat4 uViewProj;
   uniform mat4 uLightViewProj;
   uniform float uPass;
+  uniform float uShadowOffset;
   out vec3 vPos;
   out vec3 vNormal;
   out vec3 vColor;
@@ -79,7 +87,7 @@ let SCENE_VS: *i8 = `
     vNormal = aNormal;
     // Flat across a face, so linear once a corner rather than per fragment.
     vColor = pow(aColor, vec3(2.2));
-    vLight = uLightViewProj * vec4(aPos, 1.0);
+    vLight = uLightViewProj * vec4(aPos + aNormal * uShadowOffset, 1.0);
     gl_Position = uViewProj * vec4(aPos, 1.0);
   }
 `;
@@ -108,6 +116,7 @@ let SCENE_FS: *i8 = `
   uniform float uCurb;
   uniform float uFloor;
   uniform float uShadowStrength;
+  uniform float uShadowBias;
   uniform sampler2DShadow uShadow;
   out vec4 outColor;
 
@@ -119,17 +128,16 @@ let SCENE_FS: *i8 = `
     return pow(c, vec3(2.2));
   }
 
-  float shadowAt(float ndl) {
+  float shadowAt() {
     vec3 p = vLight.xyz / vLight.w * 0.5 + 0.5;
     if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z > 1.0) {
       return 1.0;
     }
-    float bias = mix(0.0025, 0.0008, ndl);
     vec2 texel = 1.0 / vec2(textureSize(uShadow, 0));
     float lit = 0.0;
     for (int x = -1; x <= 1; x++) {
       for (int y = -1; y <= 1; y++) {
-        lit += texture(uShadow, vec3(p.xy + vec2(x, y) * texel * 1.2, p.z - bias));
+        lit += texture(uShadow, vec3(p.xy + vec2(x, y) * texel * 1.2, p.z - uShadowBias));
       }
     }
     return lit / 9.0;
@@ -207,7 +215,7 @@ let SCENE_FS: *i8 = `
     }
 
     float ndl = max(dot(n, uSunDir), 0.0);
-    float shadow = mix(1.0, shadowAt(ndl), uShadowStrength);
+    float shadow = mix(1.0, shadowAt(), uShadowStrength);
     vec3 ambient = mix(uGroundColor, uSkyColor, n.y * 0.5 + 0.5);
     float occlusion = upright ? mix(0.55, 1.0, smoothstep(0.0, 1.6, vPos.y - uCurb)) : 1.0;
     if (vMat == 4 || vMat == 3) {
@@ -319,6 +327,8 @@ struct SceneUniforms {
   fogNear: i32,
   fogFar: i32,
   shadowStrength: i32,
+  shadowOffset: i32,
+  shadowBias: i32,
   shadow: i32,
 }
 
@@ -398,6 +408,8 @@ export fn startRenderer(pitch: f32, road: f32, curb: f32, floor: f32): bool {
     fogNear: gl_uniform_location(scene, "uFogNear"),
     fogFar: gl_uniform_location(scene, "uFogFar"),
     shadowStrength: gl_uniform_location(scene, "uShadowStrength"),
+    shadowOffset: gl_uniform_location(scene, "uShadowOffset"),
+    shadowBias: gl_uniform_location(scene, "uShadowBias"),
     shadow: gl_uniform_location(scene, "uShadow"),
   };
   GPU.sky = SkyUniforms {
@@ -500,6 +512,10 @@ fn drawShadows(f: *f32): void {
   for (i in 0..3) {
     HELD_LIGHT_DIR[i] = f[LIGHT_DIR + i];
   }
+  // Two texels: past the 3x3 lookup's spread, which keeps lit faces from
+  // shadowing themselves in stripes.
+  HELD_SHADOW_OFFSET = f[SHADOW_REACH] * 2.0 / SHADOW_SIZE as f32 * 2.0;
+  HELD_SHADOW_BIAS = 0.04 / f[SHADOW_DEPTH];
   SHADOW_STALE = false;
 }
 
@@ -543,6 +559,8 @@ export fn render(f: *f32, width: i32, height: i32, time: f32): void {
   gl_uniform3fv(s.camPos, f + EYE);
   gl_uniform1f(s.night, f[NIGHT]);
   gl_uniform1f(s.shadowStrength, f[SHADOW]);
+  gl_uniform1f(s.shadowOffset, HELD_SHADOW_OFFSET);
+  gl_uniform1f(s.shadowBias, HELD_SHADOW_BIAS);
   gl_uniform1f(s.fogNear, f[FOG_NEAR]);
   gl_uniform1f(s.fogFar, f[FOG_FAR]);
   gl_uniform1f(s.time, time);

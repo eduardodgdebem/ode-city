@@ -34,7 +34,10 @@ export let NIGHT: i32 = 75;
 export let SHADOW: i32 = 76;
 export let FOG_NEAR: i32 = 77;
 export let FOG_FAR: i32 = 78;
-export let FRAME_FLOATS: i32 = 80;
+// Half the shadow map's width, and how deep it reaches, in world units.
+export let SHADOW_REACH: i32 = 79;
+export let SHADOW_DEPTH: i32 = 80;
+export let FRAME_FLOATS: i32 = 84;
 
 // How long the camera waits after a touch before turning on its own.
 let IDLE_MS: f64 = 4000.0;
@@ -165,7 +168,8 @@ export fn writeFrame(out: *f32, camera: Camera, light: Light, aspect: f32, radiu
     up = Vec3.new(0.0, 0.0, 1.0);
   }
   lookAt(LIGHT_VIEW, lightEye, Vec3.new(0.0, 0.0, 0.0), up);
-  ortho(LIGHT_PROJECTION, 0.0 - reach, reach, 0.0 - reach, reach, 1.0, reach * 4.0 + 200.0);
+  let depth: f32 = reach * 4.0 + 200.0;
+  ortho(LIGHT_PROJECTION, 0.0 - reach, reach, 0.0 - reach, reach, 1.0, depth);
   multiply(out + LIGHT_VIEW_PROJ, LIGHT_PROJECTION, LIGHT_VIEW);
 
   eye.write(out + EYE);
@@ -179,6 +183,8 @@ export fn writeFrame(out: *f32, camera: Camera, light: Light, aspect: f32, radiu
   light.ambientGround.write(out + AMBIENT_GROUND);
   out[NIGHT] = light.night;
   out[SHADOW] = light.shadow;
+  out[SHADOW_REACH] = reach;
+  out[SHADOW_DEPTH] = depth - 1.0;
   out[FOG_NEAR] = camera.distance * 1.1;
   out[FOG_FAR] = camera.distance * 1.1 + 260.0;
 }
