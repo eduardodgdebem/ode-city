@@ -132,6 +132,10 @@ export fn camera_drag(dx: f32, dy: f32, now: f64): void {
   CAMERA.drag(dx, dy, now);
 }
 
+export fn camera_slide(dx: f32, dy: f32, now: f64): void {
+  CAMERA.slide(dx, dy, now);
+}
+
 export fn camera_zoom(by: f32, now: f64): void {
   CAMERA.zoom(by, now);
 }

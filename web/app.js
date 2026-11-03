@@ -435,6 +435,8 @@ function resize() {
 function listen(target) {
   const pointers = new Map();
   let pinch = 0;
+  // Two fingers' middle, which slides the view as it moves.
+  let middle = null;
   // A press that barely moves and lets go soon is a tap, which picks.
   let press = null;
   target.addEventListener('pointerdown', touch, { passive: true });
@@ -454,19 +456,32 @@ function listen(target) {
     const now = [event.clientX, event.clientY];
     pointers.set(event.pointerId, now);
     if (pointers.size === 1) {
-      ode.camera_drag(now[0] - before[0], now[1] - before[1], Date.now());
+      // A right-drag or a shift-drag slides, as two fingers do.
+      const dx = now[0] - before[0];
+      const dy = now[1] - before[1];
+      if (event.shiftKey || event.buttons & 2) {
+        ode.camera_slide(dx, dy, Date.now());
+      } else {
+        ode.camera_drag(dx, dy, Date.now());
+      }
     } else if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       const spread = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      const centre = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
       if (pinch > 0) {
         ode.camera_zoom(pinch / spread, Date.now());
       }
+      if (middle) {
+        ode.camera_slide(centre[0] - middle[0], centre[1] - middle[1], Date.now());
+      }
       pinch = spread;
+      middle = centre;
     }
   });
   const release = (event) => {
     pointers.delete(event.pointerId);
     pinch = 0;
+    middle = null;
     if (press && event.type === 'pointerup'
         && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 8 && Date.now() - press.at < 500) {
       const box = target.getBoundingClientRect();
@@ -477,6 +492,7 @@ function listen(target) {
     }
     press = null;
   };
+  target.addEventListener('contextmenu', (event) => event.preventDefault());
   target.addEventListener('pointerup', release);
   target.addEventListener('pointercancel', release);
   target.addEventListener('wheel', (event) => {

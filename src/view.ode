@@ -2,8 +2,9 @@
 // The view: the camera orbiting the city, and every number a frame's draw
 // needs, written into one block the page hands to the shaders.
 //
-// The camera circles a target. Dragging turns it, pinching moves it in and
-// out, and left alone it turns slowly. Where it looks follows the game --
+// The camera circles a target. Dragging turns it, dragging with two fingers
+// slides it across the ground, pinching moves it in and out, and left alone
+// it turns slowly. Where it looks follows the game --
 // the whole city while idle, the building site during focus -- easing there
 // rather than jumping.
 // ---------------------------------------------------------------------------
@@ -44,6 +45,10 @@ export struct Camera {
   distanceGoal: f32,
   target: Vec3,
   goal: Vec3,
+  // Where a two-finger drag slid the view, from the goal, along the ground.
+  pan: Vec3,
+  reach: f32,
+  building: bool,
   lastInput: f64,
 
   fn new(): Camera {
@@ -54,6 +59,9 @@ export struct Camera {
       distanceGoal: 40.0,
       target: Vec3.new(0.0, 0.0, 0.0),
       goal: Vec3.new(0.0, 0.0, 0.0),
+      pan: Vec3.new(0.0, 0.0, 0.0),
+      reach: 40.0,
+      building: false,
       lastInput: 0.0,
     };
   }
@@ -62,6 +70,20 @@ export struct Camera {
   fn drag(self: *Camera, dx: f32, dy: f32, now: f64): void {
     self.yaw -= dx * 0.006;
     self.pitch = clamp(self.pitch + dy * 0.004, 0.18, 1.35);
+    self.lastInput = now;
+  }
+
+  // A slide of so many pixels: what is under the fingers follows them, and
+  // the view stays over the city.
+  fn slide(self: *Camera, dx: f32, dy: f32, now: f64): void {
+    let perPixel: f32 = self.distance * 0.0012;
+    let right: Vec3 = Vec3.new(cosine(self.yaw), 0.0, 0.0 - sine(self.yaw));
+    let ahead: Vec3 = Vec3.new(0.0 - sine(self.yaw), 0.0, 0.0 - cosine(self.yaw));
+    self.pan = self.pan.sub(right.scale(dx * perPixel)).add(ahead.scale(dy * perPixel));
+    let far: f32 = self.pan.length();
+    if (far > self.reach) {
+      self.pan = self.pan.scale(self.reach / far);
+    }
     self.lastInput = now;
   }
 
@@ -77,6 +99,13 @@ export struct Camera {
     let portrait: f32 = power(larger(1.0, 0.85 / aspect), 0.6);
     self.distanceGoal = clamp((radius * 2.1 + 14.0) * portrait, 26.0, 300.0);
     self.goal = Vec3.new(0.0, 0.0, 0.0);
+    self.reach = radius + 14.0;
+    // Starting or ending a session looks at what changed, wherever the view
+    // was slid.
+    if (building != self.building) {
+      self.pan = Vec3.new(0.0, 0.0, 0.0);
+      self.building = building;
+    }
     if (building) {
       self.goal = Vec3.new(site.x * 0.6, smaller(siteTop * 0.35, 6.0), site.z * 0.6);
       self.distanceGoal = larger(self.distanceGoal * 0.8, siteTop * 1.6 + 18.0);
@@ -89,7 +118,7 @@ export struct Camera {
     }
     let ease: f32 = 1.0 - exponent(0.0 - dt * 2.2);
     self.distance += (self.distanceGoal - self.distance) * ease;
-    self.target = self.target.lerp(self.goal, ease);
+    self.target = self.target.lerp(self.goal.add(self.pan), ease);
   }
 
   fn eye(self: Camera): Vec3 {
@@ -171,6 +200,21 @@ test "pitch stays between the street and straight down" {
   assertEq(camera.pitch, 1.35);
   camera.drag(0.0, -100000.0, 0.0);
   assertEq(camera.pitch, 0.18);
+}
+
+test "a slide moves the view, but not past the city" {
+  let camera: Camera = Camera.new();
+  camera.slide(100.0, 0.0, 0.0);
+  assert(camera.pan.length() > 1.0, "the slide did not move the view");
+  camera.slide(1000000.0, 1000000.0, 0.0);
+  assert(camera.pan.length() < camera.reach + 0.01, "the slide left the city");
+}
+
+test "starting a session clears a slide" {
+  let camera: Camera = Camera.new();
+  camera.slide(100.0, 50.0, 0.0);
+  camera.aim(40.0, 1.0, true, Vec3.new(5.0, 0.0, 5.0), 10.0);
+  assertEq(camera.pan.length(), 0.0);
 }
 
 test "a portrait screen stands further back" {
