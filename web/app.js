@@ -377,8 +377,11 @@ function pageReturned() {
 // itself -- the camera turning slowly, the traffic going round -- every
 // other frame does, and behind another window a few frames a second: most
 // of what the GPU spends is on each frame drawn, however little is in it.
+// A session keeps the screen on for its whole length, so while one runs an
+// untouched city draws fewer still.
 const TOUCHED_FOR = 3000;
 const IDLE_FRAME = 1000 / 30;
+const SESSION_FRAME = 1000 / 15;
 const AWAY_FRAME = 1000 / 10;
 
 let previous = performance.now();
@@ -393,7 +396,10 @@ function frameInterval(time) {
   if (!document.hasFocus()) {
     return AWAY_FRAME;
   }
-  return time - touched < TOUCHED_FOR ? 0 : IDLE_FRAME;
+  if (time - touched < TOUCHED_FOR) {
+    return 0;
+  }
+  return phase() === PHASE.idle ? IDLE_FRAME : SESSION_FRAME;
 }
 
 function frame(time) {
@@ -559,10 +565,14 @@ function duration(minutes) {
 // The panel
 // ---------------------------------------------------------------------------
 
-function changeSettings(change) {
+// `keep` false leaves the save for later: a slider being dragged saves once
+// it is let go, not on every step.
+function changeSettings(change, keep = true) {
   change(state.settings);
   applySettings();
-  save();
+  if (keep) {
+    save();
+  }
   render();
 }
 
@@ -582,7 +592,8 @@ function bindUi() {
   slider.value = state.settings.minutes;
   slider.addEventListener('input', () => changeSettings((s) => {
     s.minutes = Number(slider.value);
-  }));
+  }, false));
+  slider.addEventListener('change', save);
 
   // Tapped while idle, the countdown's clock takes any length typed, kept
   // to what a pomodoro's focus allows; anything else puts back what was
@@ -736,10 +747,11 @@ function bindUi() {
   name.addEventListener('input', () => {
     state.name = name.value.trim();
     renderName();
-    save();
   });
+  // Saved once typed, not on every key; a page put away saves on its own.
   name.addEventListener('change', () => {
     name.value = state.name;
+    save();
   });
   name.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {

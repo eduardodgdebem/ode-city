@@ -4,8 +4,8 @@
 // one call to WebGL and does nothing else. WebGL's objects -- shaders,
 // buffers, textures -- stay on this side, in a table, and the module holds
 // their indexes, 0 for none. Strings and float arrays are read out of the
-// module's memory by address, through views made afresh each call, since
-// memory that grows leaves old views empty.
+// module's memory by address. One view of it serves every call, made
+// afresh only once the memory grows, which leaves old views empty.
 
 export function webgl(gl, memory) {
   const objects = [null];
@@ -20,7 +20,18 @@ export function webgl(gl, memory) {
     const bytes = new Uint8Array(memory().buffer, pointer);
     return new TextDecoder().decode(bytes.subarray(0, bytes.indexOf(0)));
   };
-  const floats = (pointer, count) => new Float32Array(memory().buffer, pointer, count);
+  let heap = new Float32Array(0);
+  const floats = () => {
+    if (heap.buffer !== memory().buffer) {
+      heap = new Float32Array(memory().buffer);
+    }
+    return heap;
+  };
+  // A buffer keeps its storage and is written over in place while what it
+  // is given fits, rather than given new storage on every upload; the life
+  // mesh goes up each frame. Room is in floats.
+  const room = new Map();
+  let bound = 0;
 
   return {
     gl_create_shader(kind, source) {
@@ -48,14 +59,31 @@ export function webgl(gl, memory) {
     gl_uniform_location: (program, name) => keep(gl.getUniformLocation(objects[program], text(name))),
     gl_uniform1f: (location, value) => gl.uniform1f(objects[location], value),
     gl_uniform1i: (location, value) => gl.uniform1i(objects[location], value),
-    gl_uniform3fv: (location, values) => gl.uniform3fv(objects[location], floats(values, 3)),
-    gl_uniform_matrix4fv: (location, values) => gl.uniformMatrix4fv(objects[location], false, floats(values, 16)),
+    gl_uniform3fv: (location, values) => gl.uniform3fv(objects[location], floats(), values >> 2, 3),
+    gl_uniform_matrix4fv: (location, values) => gl.uniformMatrix4fv(objects[location], false, floats(), values >> 2, 16),
 
     gl_create_vertex_array: () => keep(gl.createVertexArray()),
     gl_bind_vertex_array: (array) => gl.bindVertexArray(objects[array]),
     gl_create_buffer: () => keep(gl.createBuffer()),
-    gl_bind_array_buffer: (buffer) => gl.bindBuffer(gl.ARRAY_BUFFER, objects[buffer]),
-    gl_buffer_floats: (data, count) => gl.bufferData(gl.ARRAY_BUFFER, floats(data, count), gl.DYNAMIC_DRAW),
+    gl_bind_array_buffer(buffer) {
+      bound = buffer;
+      gl.bindBuffer(gl.ARRAY_BUFFER, objects[buffer]);
+    },
+    gl_buffer_floats(data, count) {
+      if (count === 0) {
+        return;
+      }
+      if (count <= (room.get(bound) ?? 0)) {
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, floats(), data >> 2, count);
+        return;
+      }
+      // A quarter more than asked, so a mesh that grows a little each frame
+      // does not need new storage each frame.
+      const size = Math.ceil(count * 1.25);
+      gl.bufferData(gl.ARRAY_BUFFER, size * 4, gl.DYNAMIC_DRAW);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, floats(), data >> 2, count);
+      room.set(bound, size);
+    },
     gl_float_attribute(index, size, stride, offset) {
       gl.enableVertexAttribArray(index);
       gl.vertexAttribPointer(index, size, gl.FLOAT, false, stride, offset);

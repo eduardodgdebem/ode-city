@@ -10,7 +10,7 @@
 // Pages lets keep a file ten minutes: an update would otherwise fetch the
 // same old files again.
 
-const VERSION = 'ode-city-17';
+const VERSION = 'ode-city-18';
 const SHELL = [
   './',
   'index.html',
@@ -46,20 +46,20 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) {
     return;
   }
-  event.respondWith(
-    caches.open(VERSION).then(async (cache) => {
-      const cached = await cache.match(request, { ignoreSearch: true });
-      const fresh = fetch(request, { cache: 'no-cache' })
-        .then((response) => {
-          if (response.ok) {
-            cache.put(request, response.clone());
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached ?? fresh;
-    }),
-  );
+  const cache = caches.open(VERSION);
+  const cached = cache.then((open) => open.match(request, { ignoreSearch: true }));
+  const fresh = cache.then((open) => fetch(request, { cache: 'no-cache' })
+    .then(async (response) => {
+      if (response.ok) {
+        await open.put(request, response.clone());
+      }
+      return response;
+    }))
+    .catch(() => cached);
+  event.respondWith(cached.then((hit) => hit ?? fresh));
+  // Answered from the cache, the page does not wait for the fetch; the
+  // worker must, or the browser may stop it before the update is stored.
+  event.waitUntil(fresh.then(() => {}, () => {}));
 });
 
 // The page asks which version is serving it.

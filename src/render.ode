@@ -59,16 +59,26 @@ let SCENE_VS: *i8 = `
   layout(location = 3) in float aMat;
   uniform mat4 uViewProj;
   uniform mat4 uLightViewProj;
+  uniform float uPass;
   out vec3 vPos;
   out vec3 vNormal;
   out vec3 vColor;
   out vec4 vLight;
   flat out int vMat;
   void main() {
+    vMat = int(aMat + 0.5);
+    // Ghost and picked faces draw in the second pass, the rest in the first.
+    // A triangle not of this pass goes off screen whole, since its corners
+    // share a material: a discard in the fragment shader would cost every
+    // fragment of the city the GPU's hidden-surface removal.
+    if ((uPass < 0.5) == (vMat == 7 || vMat == 8)) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      return;
+    }
     vPos = aPos;
     vNormal = aNormal;
-    vColor = aColor;
-    vMat = int(aMat + 0.5);
+    // Flat across a face, so linear once a corner rather than per fragment.
+    vColor = pow(aColor, vec3(2.2));
     vLight = uLightViewProj * vec4(aPos, 1.0);
     gl_Position = uViewProj * vec4(aPos, 1.0);
   }
@@ -91,7 +101,6 @@ let SCENE_FS: *i8 = `
   uniform vec3 uCamPos;
   uniform float uNight;
   uniform float uTime;
-  uniform float uPass;
   uniform float uFogNear;
   uniform float uFogFar;
   uniform float uPitch;
@@ -129,9 +138,6 @@ let SCENE_FS: *i8 = `
   void main() {
     bool ghost = vMat == 7;
     bool picked = vMat == 8;
-    if ((uPass < 0.5) == (ghost || picked)) {
-      discard;
-    }
     vec3 n = normalize(vNormal);
     vec3 toCam = normalize(uCamPos - vPos);
 
@@ -152,7 +158,7 @@ let SCENE_FS: *i8 = `
       return;
     }
 
-    vec3 base = linear(vColor);
+    vec3 base = vColor;
     vec3 glow = vec3(0.0);
     float shine = 0.0;
     bool upright = abs(n.y) < 0.5;
@@ -227,9 +233,12 @@ let DEPTH_VS: *i8 = `
   layout(location = 0) in vec3 aPos;
   layout(location = 3) in float aMat;
   uniform mat4 uLightViewProj;
-  flat out int vMat;
   void main() {
-    vMat = int(aMat + 0.5);
+    // Ghost and picked faces cast no shadow; off screen, as in SCENE_VS.
+    if (aMat > 6.5) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      return;
+    }
     gl_Position = uLightViewProj * vec4(aPos, 1.0);
   }
 `;
@@ -237,11 +246,7 @@ let DEPTH_VS: *i8 = `
 let DEPTH_FS: *i8 = `
   #version 300 es
   precision mediump float;
-  flat in int vMat;
   void main() {
-    if (vMat >= 7) {
-      discard;
-    }
   }
 `;
 
