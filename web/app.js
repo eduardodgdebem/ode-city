@@ -43,6 +43,9 @@ boot().catch((error) => {
   $('loading').textContent = `Could not start: ${error.message}`;
 });
 openLinksOutside();
+// Any tap unlocks sound, so a page reloaded mid-session still chimes.
+document.addEventListener('pointerdown', unlockAudio, { passive: true });
+document.addEventListener('keydown', unlockAudio);
 
 async function boot() {
   canvas = $('scene');
@@ -665,6 +668,13 @@ function bindUi() {
   $('sound').addEventListener('change', (event) => changeSettings((s) => {
     s.sound = event.target.checked;
   }));
+  // A preview, so turning sound on shows whether it can be heard.
+  $('sound').addEventListener('change', (event) => {
+    if (event.target.checked) {
+      unlockAudio();
+      chime([523.25, 659.25]);
+    }
+  });
   for (const button of $('sky').querySelectorAll('button')) {
     button.addEventListener('click', () => {
       changeSettings((s) => {
@@ -995,6 +1005,15 @@ function chime(notes) {
   if (!state.settings.sound || !audio) {
     return;
   }
+  // iOS suspends the context while the app is in the background.
+  if (audio.state !== 'running') {
+    audio.resume().then(() => play(notes), () => {});
+    return;
+  }
+  play(notes);
+}
+
+function play(notes) {
   const start = audio.currentTime + 0.02;
   notes.forEach((frequency, i) => {
     const oscillator = audio.createOscillator();
