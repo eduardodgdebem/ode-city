@@ -377,11 +377,8 @@ function pageReturned() {
 // itself -- the camera turning slowly, the traffic going round -- every
 // other frame does, and behind another window a few frames a second: most
 // of what the GPU spends is on each frame drawn, however little is in it.
-// A session keeps the screen on for its whole length, so while one runs an
-// untouched city draws fewer still.
 const TOUCHED_FOR = 3000;
 const IDLE_FRAME = 1000 / 30;
-const SESSION_FRAME = 1000 / 15;
 const AWAY_FRAME = 1000 / 10;
 
 let previous = performance.now();
@@ -396,10 +393,7 @@ function frameInterval(time) {
   if (!document.hasFocus()) {
     return AWAY_FRAME;
   }
-  if (time - touched < TOUCHED_FOR) {
-    return 0;
-  }
-  return phase() === PHASE.idle ? IDLE_FRAME : SESSION_FRAME;
+  return time - touched < TOUCHED_FOR ? 0 : IDLE_FRAME;
 }
 
 function frame(time) {
