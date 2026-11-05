@@ -225,7 +225,7 @@ function fresh() {
     seed: (Math.random() * 0x7fffffff) | 0,
     name: '',
     sessions: [],
-    settings: { mode: 0, minutes: 25, focus: 25, short: 5, long: 15, rounds: 4, strict: false, sound: true, sky: 'auto', compact: false },
+    settings: { mode: 0, minutes: 25, focus: 25, short: 5, long: 15, rounds: 4, strict: false, sound: true, sky: 'auto', eco: 'off', compact: false },
     timer: null,
     hiddenAt: null,
   };
@@ -419,11 +419,29 @@ function frame(time) {
 }
 
 
-// The canvas's size in pixels, matched to how big it is drawn.
-function resize() {
+// Eco caps the pixels drawn, by count rather than width, so a tall phone and
+// a wide monitor are held to the same budget; the canvas is stretched back
+// to fill its place.
+const ECO_PIXELS = { off: Infinity, 1080: 1920 * 1080, 720: 1280 * 720 };
+
+// The canvas's size in pixels, and whether Eco brought it down.
+function drawSize() {
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.floor(canvas.clientWidth * ratio);
-  const height = Math.floor(canvas.clientHeight * ratio);
+  let width = canvas.clientWidth * ratio;
+  let height = canvas.clientHeight * ratio;
+  const cap = ECO_PIXELS[state.settings.eco] ?? Infinity;
+  const capped = width * height > cap;
+  if (capped) {
+    const scale = Math.sqrt(cap / (width * height));
+    width *= scale;
+    height *= scale;
+  }
+  return { width: Math.floor(width), height: Math.floor(height), capped };
+}
+
+// Matches the canvas's pixels to how big it is drawn.
+function resize() {
+  const { width, height } = drawSize();
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
@@ -694,6 +712,7 @@ function bindUi() {
     $('sound').checked = state.settings.sound;
     $('city-name').value = state.name;
     renderSky();
+    renderEco();
     renderTotals();
     renderHistory();
     if (closing) {
@@ -729,6 +748,14 @@ function bindUi() {
       chime([523.25, 659.25]);
     }
   });
+  for (const button of $('eco').querySelectorAll('button')) {
+    button.addEventListener('click', () => {
+      changeSettings((s) => {
+        s.eco = button.dataset.eco;
+      });
+      renderEco();
+    });
+  }
   for (const button of $('sky').querySelectorAll('button')) {
     button.addEventListener('click', () => {
       changeSettings((s) => {
@@ -976,6 +1003,20 @@ const SKY_NOTES = {
   dusk: 'Always sunset: the golden hour, the sun going down.',
   night: 'Always night, the windows lit.',
 };
+
+function renderEco() {
+  for (const button of $('eco').querySelectorAll('button')) {
+    const on = button.dataset.eco === state.settings.eco;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-checked', String(on));
+    button.setAttribute('role', 'radio');
+  }
+  // What it comes to on this screen, which is what the choice is about.
+  const { width, height, capped } = drawSize();
+  $('eco-note').textContent = capped
+    ? `Drawn at ${width} × ${height} and stretched to fit: softer, and easier on the battery.`
+    : `Drawn at ${width} × ${height}, as sharp as this screen allows.`;
+}
 
 function renderSky() {
   for (const button of $('sky').querySelectorAll('button')) {
